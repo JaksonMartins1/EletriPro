@@ -392,6 +392,162 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
  </section>
 }
 
+
+// v0.7.22 — Orçamentos por projeto no Supabase. Rascunho local preservado até importação explícita.
+type CloudBudget={id:string;title:string;status:string};
+type CloudBudgetItem={id:string;description:string;quantity:number;unit:string;unit_price:number};
+type BudgetEditItem=BudgetItem & {cloudId?:string};
+function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:string;localBudget:BudgetItem[]}){
+ const [projectId,setProjectId]=useState('');
+ const [budgets,setBudgets]=useState<CloudBudget[]>([]);
+ const [selectedId,setSelectedId]=useState<string|null>(null);
+ const [title,setTitle]=useState('Novo orçamento');
+ const [items,setItems]=useState<BudgetEditItem[]>([]);
+ const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[dirty,setDirty]=useState(false);
+ const [status,setStatus]=useState('');
+ const [materials,setMaterials]=useState<MaterialRow[]>([]);
+ const [manualDescription,setManualDescription]=useState(''),[manualUnit,setManualUnit]=useState('un'),[manualQty,setManualQty]=useState('1'),[manualPrice,setManualPrice]=useState('0');
+ const request=React.useRef(0);
+ const selectedRef=React.useRef<string|null>(null);
+ const dirtyRef=React.useRef(false);
+ const updateDirty=(value:boolean)=>{dirtyRef.current=value;setDirty(value)};
+ const setSelection=(id:string|null)=>{selectedRef.current=id;setSelectedId(id)};
+ const uuid=()=>typeof crypto!=='undefined'&&'randomUUID'in crypto?crypto.randomUUID():`tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+ const confirmDiscard=()=>!dirtyRef.current||window.confirm('Existem alterações não salvas. Deseja descartá-las?');
+ const setRowsDirty=(fn:(old:BudgetEditItem[])=>BudgetEditItem[])=>{setItems(fn);updateDirty(true)};
+ const loadItems=async(id:string,req:number)=>{
+  if(!supabase)return;
+  const result=await supabase.from('eletripro_budget_items').select('id,description,quantity,unit,unit_price').eq('budget_id',id).order('created_at',{ascending:true});
+  if(req!==request.current)return;
+  if(result.error){setStatus('Erro ao carregar itens: '+result.error.message);return}
+  setItems(((result.data||[]) as CloudBudgetItem[]).map(x=>({id:x.id,cloudId:x.id,description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price)})));
+  updateDirty(false);
+ };
+ useEffect(()=>{
+  const req=++request.current;
+  setProjectId('');setBudgets([]);setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setLoading(true);setStatus('Carregando orçamentos...');
+  void (async()=>{try{
+   if(!supabase)throw new Error('Supabase indisponível');
+   const id=await ensureEletriProject(clientId,userId);
+   const [br,mr]=await Promise.all([
+    supabase.from('eletripro_budgets').select('id,title,status').eq('project_id',id).order('created_at',{ascending:true}),
+    supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price').eq('project_id',id).order('created_at',{ascending:true})
+   ]);
+   if(req!==request.current)return;
+   if(br.error)throw br.error;
+   setProjectId(id);setBudgets((br.data||[]) as CloudBudget[]);
+   if(mr.error)setStatus('Orçamentos carregados; materiais indisponíveis: '+mr.error.message);
+   else{setMaterials((mr.data||[]) as MaterialRow[]);setStatus('Orçamentos carregados do Supabase.');}
+  }catch(e){if(req===request.current)setStatus('Erro ao carregar: '+(e instanceof Error?e.message:String(e)))}
+  finally{if(req===request.current)setLoading(false)}
+  })();
+  return()=>{request.current++};
+ },[clientId,userId]);
+ async function selectBudget(row:CloudBudget){
+  if(busy||loading||!confirmDiscard())return;
+  const req=++request.current;setLoading(true);setSelection(row.id);setTitle(row.title);setItems([]);updateDirty(false);setStatus('Carregando itens...');
+  await loadItems(row.id,req);
+  if(req===request.current)setLoading(false);
+ }
+ function newBudget(){
+  if(busy||loading||!confirmDiscard())return;
+  setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
+ }
+ async function save(){
+  if(!supabase||!projectId||busy||loading)return;
+  if(!title.trim()){setStatus('Informe o nome do orçamento.');return}
+  if(items.some(x=>!x.description.trim()||!Number.isFinite(x.quantity)||x.quantity<0||!Number.isFinite(x.unitPrice)||x.unitPrice<0)){setStatus('Revise as descrições, quantidades e preços.');return}
+  setBusy(true);setStatus('Salvando orçamento...');
+  let budgetId=selectedRef.current;
+  try{
+   if(budgetId){
+    const r=await supabase.from('eletripro_budgets').update({title:title.trim(),updated_at:new Date().toISOString()}).eq('id',budgetId).eq('project_id',projectId).select('id').single();
+    if(r.error)throw r.error;
+   }else{
+    const r=await supabase.from('eletripro_budgets').insert({project_id:projectId,title:title.trim(),status:'rascunho'}).select('id').single();
+    if(r.error)throw r.error;
+    budgetId=r.data.id;setSelection(budgetId);
+    setBudgets(old=>[...old,{id:budgetId!,title:title.trim(),status:'rascunho'}]);
+   }
+   // Atualizar/adicionar antes de excluir; se houver falha, os itens anteriores permanecem.
+   const persisted:BudgetEditItem[]=[];
+   for(const item of items){
+    const payload={description:item.description.trim(),quantity:item.quantity,unit:item.unit,unit_price:item.unitPrice};
+    const r=item.cloudId
+     ?await supabase.from('eletripro_budget_items').update(payload).eq('id',item.cloudId).eq('budget_id',budgetId).select('id').single()
+     :await supabase.from('eletripro_budget_items').upsert({id:/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(item.id)?item.id:uuid(),budget_id:budgetId,...payload},{onConflict:'id'}).select('id').single();
+    if(r.error)throw r.error;
+    persisted.push({...item,id:r.data.id,cloudId:r.data.id});
+   }
+   const existing=await supabase.from('eletripro_budget_items').select('id').eq('budget_id',budgetId);
+   if(existing.error)throw existing.error;
+   const keep=new Set(persisted.map(x=>x.cloudId));
+   for(const old of existing.data||[]){
+    if(!keep.has(old.id)){
+     const del=await supabase.from('eletripro_budget_items').delete().eq('id',old.id).eq('budget_id',budgetId);
+     if(del.error)throw del.error;
+    }
+   }
+   setItems(persisted);setBudgets(old=>old.map(x=>x.id===budgetId?{...x,title:title.trim()}:x));
+   updateDirty(false);setStatus('Orçamento salvo no Supabase.');
+  }catch(e){setStatus('Falha ao salvar: '+(e instanceof Error?e.message:String(e))+'. Confira o orçamento antes de tentar novamente.')}
+  finally{setBusy(false)}
+ }
+ async function removeBudget(){
+  if(!supabase||!selectedId||!projectId||busy||!window.confirm('Excluir este orçamento e TODOS os seus itens do Supabase?'))return;
+  setBusy(true);const id=selectedId;
+  const r=await supabase.from('eletripro_budgets').delete().eq('id',id).eq('project_id',projectId);
+  setBusy(false);
+  if(r.error){setStatus('Erro ao excluir: '+r.error.message);return}
+  setBudgets(old=>old.filter(x=>x.id!==id));setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Orçamento excluído.');
+ }
+ function importLocal(){
+  if(!localBudget.length)return;
+  if(!window.confirm(`Adicionar ${localBudget.length} itens do rascunho local a este orçamento? Os itens locais serão preservados; importar novamente poderá duplicá-los.`))return;
+  setRowsDirty(old=>[...old,...localBudget.map(x=>({...x,id:uuid()}))]);setStatus('Itens locais adicionados. Clique em Salvar orçamento para sincronizar. O rascunho local não foi apagado.');
+ }
+ function importMaterials(){
+  if(!materials.length)return;
+  if(!window.confirm(`Adicionar ${materials.length} materiais cadastrados a este orçamento? A operação pode criar duplicidades.`))return;
+  setRowsDirty(old=>[...old,...materials.map(x=>({id:uuid(),description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price)}))]);setStatus('Materiais adicionados. Clique em Salvar orçamento.');
+ }
+ function addManual(){
+  const q=Number(manualQty),price=Number(manualPrice);
+  if(!manualDescription.trim()||!Number.isFinite(q)||q<=0||!Number.isFinite(price)||price<0)return;
+  setRowsDirty(old=>[...old,{id:uuid(),description:manualDescription.trim(),quantity:q,unit:manualUnit,unitPrice:price}]);
+  setManualDescription('');setManualQty('1');setManualPrice('0');
+ }
+ const total=items.reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
+ return <div style={{display:'grid',gap:16}}>
+ <section className="panel"><div className="panel-heading"><div><h2>Orçamentos do projeto · Supabase</h2><p>Crie e edite vários orçamentos para este cliente. Os dados são sincronizados após clicar em Salvar orçamento.</p></div><button className="outline" type="button" disabled={busy||loading} onClick={newBudget}><Plus size={16}/> Novo orçamento</button></div>
+ {loading?<p className="hint">Carregando...</p>:budgets.length===0?<p className="hint">Nenhum orçamento salvo neste projeto.</p>:<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{budgets.map(b=><button key={b.id} type="button" disabled={busy} className={selectedId===b.id?'primary':'outline'} onClick={()=>void selectBudget(b)}>{b.title}</button>)}</div>}
+ <p className="hint" role="status">{status}</p>
+ </section>
+ <section className="panel"><h2>{selectedId?'Editar orçamento':'Novo orçamento'}</h2>
+ <label>Nome do orçamento<input maxLength={160} value={title} disabled={busy||loading} onChange={e=>{setTitle(e.target.value);updateDirty(true)}} placeholder="Ex.: Instalação elétrica - residência"/></label>
+ <div style={{display:'flex',gap:8,flexWrap:'wrap',margin:'12px 0'}}>
+ <button type="button" className="outline" disabled={busy||loading||!localBudget.length} onClick={importLocal}>Importar rascunho local ({localBudget.length})</button>
+ <button type="button" className="outline" disabled={busy||loading||!materials.length} onClick={importMaterials}>Adicionar materiais cadastrados ({materials.length})</button>
+ </div>
+ <p className="hint">As importações são opcionais e não apagam a origem. Revise os itens antes de salvar para evitar duplicidades.</p>
+ <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:8}}>Descrição</th><th style={{textAlign:'left',padding:8,width:90}}>Quantidade</th><th style={{textAlign:'left',padding:8,width:75}}>Un.</th><th style={{textAlign:'left',padding:8,width:125}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:8,width:120}}>Subtotal</th><th style={{width:48}}/></tr></thead><tbody>{items.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:8}}><input aria-label="Descrição" style={{minWidth:180}} disabled={busy||loading} value={x.description} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,description:e.target.value}:y))}/></td><td style={{padding:8}}><input aria-label={'Quantidade '+x.description} style={{minWidth:65}} type="number" min="0" step="0.001" disabled={busy||loading} value={x.quantity} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Number(e.target.value)}:y))}/></td><td style={{padding:8}}><input aria-label={'Unidade '+x.description} style={{minWidth:55}} disabled={busy||loading} value={x.unit} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unit:e.target.value}:y))}/></td><td style={{padding:8}}><input aria-label={'Preço '+x.description} style={{minWidth:95}} type="number" min="0" step="0.01" disabled={busy||loading} value={x.unitPrice} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Number(e.target.value)}:y))}/></td><td style={{textAlign:'right',whiteSpace:'nowrap',padding:8}}>{moneyBR(x.quantity*x.unitPrice)}</td><td><button type="button" className="outline" disabled={busy||loading} title="Remover item" onClick={()=>setRowsDirty(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
+ {items.length===0&&<p className="hint">Nenhum item incluído. Importe materiais ou adicione um item manualmente.</p>}
+ <div style={{display:'flex',justifyContent:'space-between',gap:12,margin:'18px 0',flexWrap:'wrap'}}><strong>Total do orçamento</strong><strong style={{fontSize:22}}>{moneyBR(total)}</strong></div>
+ <div className="sizing-metric" style={{padding:16}}><h3>Adicionar item manualmente</h3>
+ <label>Descrição<input value={manualDescription} disabled={busy||loading} onChange={e=>setManualDescription(e.target.value)}/></label>
+ <div className="two"><label>Unidade<select value={manualUnit} disabled={busy||loading} onChange={e=>setManualUnit(e.target.value)}><option value="un">un</option><option value="m">m</option><option value="m²">m²</option><option value="h">h</option><option value="kg">kg</option></select></label><label>Quantidade<input type="number" min="0.001" step="0.001" value={manualQty} disabled={busy||loading} onChange={e=>setManualQty(e.target.value)}/></label></div>
+ <label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={manualPrice} disabled={busy||loading} onChange={e=>setManualPrice(e.target.value)}/></label>
+ <button type="button" className="outline" disabled={busy||loading||!manualDescription.trim()||!(Number(manualQty)>0)||!(Number(manualPrice)>=0)} onClick={addManual}><Plus size={16}/> Adicionar item</button>
+ </div>
+ <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:16}}>
+ <button type="button" className="primary" disabled={busy||loading||!projectId||!title.trim()} onClick={()=>void save()}>{busy?'Salvando...':selectedId?'Atualizar orçamento':'Salvar orçamento'}</button>
+ {selectedId&&<button type="button" className="outline" disabled={busy||loading} onClick={()=>void removeBudget()}>Excluir orçamento</button>}
+ </div>
+ {dirty&&<p className="hint">Há alterações não salvas no Supabase.</p>}
+ <p className="hint">O rascunho local continua disponível no navegador e não é excluído automaticamente. Os orçamentos salvos podem ser abertos em outro dispositivo.</p>
+ </section></div>;
+}
+
 function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState('Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false);
  const [budgetItems,setBudgetItems]=useState<BudgetItem[]>([]);
  const [activeClientId,setActiveClientId]=useState<string|null>(null);
@@ -472,17 +628,12 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Personalização'&&<div className="brand-grid"><section className="panel form"><h2>Identidade profissional</h2><p>Defina como sua marca aparecerá nos documentos.</p><label>Nome profissional ou empresa<input value={professional} onChange={e=>setProfessional(e.target.value)} placeholder="Ex.: Minha Elétrica"/></label><label>Logomarca (PNG, JPG ou WebP)<span className="upload"><Upload size={18}/> Selecionar imagem<input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>pickLogo(e.target.files?.[0])}/></span></label><label>Cor de destaque</label><div className="swatches">{colors.map(c=><button type="button" key={c} onClick={()=>setAccent(c)} aria-label={'Selecionar '+c} className={accent===c?'selected':''} style={{background:c}}/>)}</div><button className="primary" disabled={loading} onClick={saveBrand}>Salvar personalização</button><p className="hint">Nome, cores e logomarca são sincronizados com sua conta no Supabase. A geração de PDF será implementada depois.</p></section><section className="panel"><h2>Prévia do documento</h2><div className="paper"><div className="paper-head">{logo?<img src={logo} alt="Logomarca"/>:<div className="paper-logo" style={{background:accent}}><Zap/></div>}<div><strong>{professional||'Sua empresa elétrica'}</strong><small>Orçamento de serviços</small></div></div><div className="paper-line" style={{background:accent}}/><p>CLIENTE: Nome do cliente</p><div className="paper-row"><span>Descrição dos serviços</span><span>Valor</span></div><div className="paper-row"><span>Instalação elétrica residencial</span><span>R$ 1.500,00</span></div><div className="paper-total">Total: R$ 1.500,00</div></div><p className="hint">Apenas visualização. Nenhum PDF é gerado nesta versão.</p></section></div>}
 {tab==='Meu Perfil'&&<form className="panel form profile-form" onSubmit={saveProfile}><h2>Meus dados</h2><p>Dados pessoais vinculados à sua conta. A confirmação do e-mail é gerenciada pelo Supabase.</p><label>E-mail<input type="email" value={session.user.email||''} disabled/></label><label>Nome completo<input value={fullName} onChange={e=>setFullName(e.target.value)}/></label><div className="two"><label>CPF<input inputMode="numeric" value={cpf} onChange={e=>setCpf(e.target.value.replace(/\D/g,'').slice(0,11))}/></label><label>Nascimento<input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></label></div><label>Telefone celular<input type="tel" inputMode="tel" placeholder="(48) 99999-9999" value={mobile} onChange={e=>setMobile(formatMobile(e.target.value))}/></label><h2>Endereço</h2><label>Rua / avenida<input value={street} onChange={e=>setStreet(e.target.value)}/></label><div className="two"><label>Número<input value={number} onChange={e=>setNumber(e.target.value)}/></label><label>Complemento<input value={complement} onChange={e=>setComplement(e.target.value)}/></label></div><label>Bairro<input value={neighborhood} onChange={e=>setNeighborhood(e.target.value)}/></label><div className="two"><label>Cidade<input value={city} onChange={e=>setCity(e.target.value)}/></label><label>Estado<select value={state} onChange={e=>setState(e.target.value)}><option value="">Selecione</option>{statesBR.map(st=><option key={st} value={st}>{st}</option>)}</select></label></div><p className="hint">Envio de documento com foto e troca de senha serão disponibilizados após a validação do fluxo de segurança.</p><button className="primary" type="submit" disabled={loading||!profileLoaded}>Salvar meus dados</button></form>}
 {tab==='Assinatura'&&<section className="panel subscription"><Crown size={32}/><h2>EletriPro Pro</h2><p>Assinatura anual com clientes ilimitados e recursos profissionais.</p><strong>Valor a definir</strong><button className="primary" disabled>Pagamento Pix em preparação</button><small>O acesso Pro só será ativado após confirmação segura do pagamento pelo Mercado Pago.</small></section>}
-{clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div><p className="hint">Tipo de instalação pode ser salvo no Supabase. Os itens do orçamento continuam como rascunho local neste navegador.</p></section>}
+{clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div><p className="hint">Tipo de instalação pode ser salvo no Supabase. Orçamentos salvos são sincronizados no Supabase; o rascunho local é preservado até importação manual.</p></section>}
 {tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation}/><section className="panel" style={{marginTop:12}}><button type="button" className="primary" disabled={installationLoading||installationSaving} onClick={saveInstallation}>{installationLoading?'Carregando projeto...':installationSaving?'Salvando...':'Salvar tipo de instalação'}</button>{installationStatus&&<p className="hint" role="status">{installationStatus}</p>}</section></>}
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} onAddToBudget={addSizingToBudget} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
 {tab==='Materiais'&&activeClient&&<MaterialsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
-{tab==='Orçamentos'&&activeClient&&<section className="panel"><h2>Orçamento de materiais · rascunho</h2><p>Revise os materiais, ajuste as quantidades e os preços ou adicione itens manualmente. Rascunho por cliente salvo neste navegador, ainda não sincronizado com Supabase.</p>
-<div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:'10px 8px'}}>Material / descrição</th><th style={{textAlign:'left',padding:'10px 8px',width:90}}>Quantidade</th><th style={{textAlign:'left',padding:'10px 8px',width:65}}>Un.</th><th style={{textAlign:'left',padding:'10px 8px',width:130}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:'10px 8px',width:120}}>Subtotal</th><th style={{width:48}}></th></tr></thead><tbody>{budgetItems.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:'10px 8px',fontSize:13}}>{x.description}</td><td style={{padding:'8px'}}><input aria-label={'Quantidade de '+x.description} type="number" min="0" step="any" value={x.quantity} style={{width:'100%',minWidth:70}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,quantity:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{padding:'8px',fontSize:13}}>{x.unit}</td><td style={{padding:'8px'}}><input aria-label={'Preço unitário de '+x.description} type="number" min="0" step="0.01" value={x.unitPrice} style={{width:'100%',minWidth:105}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{textAlign:'right',padding:'8px',whiteSpace:'nowrap',fontWeight:600}}>{moneyBR(x.quantity*x.unitPrice)}</td><td style={{padding:'8px'}}><button type="button" className="outline" style={{padding:'8px 10px'}} title="Remover item" aria-label={'Remover '+x.description} onClick={()=>setBudgetItems(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
-{budgetItems.length===0&&<p className="hint">Nenhum material incluído. Você pode adicionar um item manualmente abaixo ou enviar materiais pelo Dimensionamento.</p>}
-<div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,margin:'18px 0',flexWrap:'wrap'}}><strong>Total de materiais</strong><strong style={{fontSize:22}}>{moneyBR(budgetItems.reduce((sum,x)=>sum+x.quantity*x.unitPrice,0))}</strong></div>
-<div className="sizing-metric" style={{padding:16}}><h3 style={{marginTop:0}}>Adicionar item manualmente</h3><label>Descrição do material ou serviço<input value={manualDescription} onChange={e=>setManualDescription(e.target.value)} placeholder="Ex.: Tomada 2P+T 10 A"/></label><div className="two"><label>Unidade<select value={manualUnit} onChange={e=>setManualUnit(e.target.value)}><option value="un">Unidade (un)</option><option value="m">Metro (m)</option><option value="m²">Metro quadrado (m²)</option><option value="h">Hora (h)</option><option value="kg">Quilograma (kg)</option></select></label><label>Quantidade<input type="number" min="0.01" step="any" value={manualQty} onChange={e=>setManualQty(e.target.value)}/></label></div><label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={manualPrice} onChange={e=>setManualPrice(e.target.value)}/></label><button className="primary" type="button" disabled={!manualDescription.trim()||!(Number(manualQty)>0)||!(Number(manualPrice)>=0)} onClick={addManualBudgetItem}><Plus size={16}/> Adicionar item</button></div>
-<p className="hint">Quantidades de cabos são estimativas iniciais, editáveis. Em iluminação, o PE não é incluído automaticamente na lista; verifique sua necessidade conforme a instalação e a NBR 5410. Não inclui automaticamente perdas, reserva técnica ou mão de obra. Os itens são armazenados localmente por cliente neste navegador; não estão sincronizados entre dispositivos.</p></section>}
+{tab==='Orçamentos'&&activeClient&&<BudgetsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.21 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.22 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
