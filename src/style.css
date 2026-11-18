@@ -46,3 +46,15 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-modal-backdrop .ep-circuit-editor .panel{margin-bottom:14px}
 @media(max-width:720px){.panel-heading{align-items:flex-start}.client{flex-wrap:wrap}.client>div:last-child{width:100%}.client>div:last-child button{flex:1}.ep-modal-backdrop{padding:8px;align-items:stretch}.ep-modal-backdrop>.ep-editor-card,.ep-modal-backdrop>.ep-circuit-editor{max-height:calc(100dvh - 16px);width:100%;border-radius:16px}.ep-modal-backdrop>.ep-editor-card{padding:16px}.ep-modal-backdrop .ep-circuit-editor{padding:8px}.ep-circuit-editor .sizing-layout{grid-template-columns:1fr}.ep-editor-heading{position:sticky;top:0;z-index:2;background:#1b1e24;padding:8px 0}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}button,select,input,textarea{transition:none}}
+
+
+/* EletriPro v0.7.25 — Formulários exclusivamente em janelas */
+.ep-total-highlight{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;margin:20px 0;padding:22px 24px;border:1px solid #a67c13;border-radius:16px;background:linear-gradient(115deg,#312914,#1d2025)}
+.ep-total-highlight span{font-size:14px;font-weight:700;color:#f1d891}
+.ep-total-highlight strong{font-size:clamp(24px,4vw,34px);color:#facc15;letter-spacing:-.035em}
+.ep-modal-close-bottom{margin:12px 0 6px;min-width:130px}
+.ep-modal-backdrop .ep-editor-card{overflow-y:auto}
+.ep-modal-backdrop .ep-editor-heading{position:sticky;top:-26px;background:#1b1e24;z-index:3;padding:8px 0}
+.ep-modal-backdrop .ep-circuit-editor{max-width:980px}
+.ep-modal-backdrop .ep-circuit-editor .ep-editor-heading{top:0}
+@media(max-width:720px){.ep-total-highlight{padding:18px}.ep-modal-backdrop .ep-editor-heading{top:-16px}.ep-modal-backdrop .ep-circuit-editor .ep-editor-heading{top:0}}

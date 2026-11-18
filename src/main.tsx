@@ -66,6 +66,7 @@ const environmentTypes=['Sala','Quarto','Cozinha','Banheiro','Lavanderia','Corre
 function Environments({clientId,userId}:{clientId:string;userId:string}){
  const [rows,setRows]=useState<SavedEnvironment[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
+ const [editorOpen,setEditorOpen]=useState(false);
  const [title,setTitle]=useState('');
  const [kind,setKind]=useState('Sala');
  const [width,setWidth]=useState('');
@@ -82,10 +83,10 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
  const l=length.trim()?parseDimension(length):NaN;
  const dimensionsValid=Number.isFinite(w)&&w>0&&Number.isFinite(l)&&l>0;
  const area=dimensionsValid?w*l:null;
- const reset=()=>{setSelectedId(null);setTitle('');setKind('Sala');setWidth('');setLength('');setNotes('');setStatus('Novo ambiente.');};
+ const reset=()=>{setEditorOpen(false);setSelectedId(null);setTitle('');setKind('Sala');setWidth('');setLength('');setNotes('');setStatus('Novo ambiente.');};
  const selectRow=(row:SavedEnvironment)=>{
   const d=row.data||{};
-  setSelectedId(row.id);setTitle(row.title);
+  setEditorOpen(true);setSelectedId(row.id);setTitle(row.title);
   setKind(typeof d.kind==='string'?d.kind:'Outro');
   setWidth(d.width===undefined?'':String(d.width));setLength(d.length===undefined?'':String(d.length));
   setNotes(typeof d.notes==='string'?d.notes:'');setStatus('Ambiente carregado.');
@@ -131,12 +132,12 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
  }
  const totalArea=rows.reduce((sum,row)=>{const d=row.data||{};const a=Number(d.area);return sum+(Number.isFinite(a)&&a>0?a:0)},0);
  return <div style={{display:'grid',gap:16}}>
-  <section className="panel"><div className="panel-heading"><div><h2>Ambientes do projeto</h2><p>Cadastre cômodos e recupere suas medidas em qualquer dispositivo.</p></div><button type="button" className="outline" onClick={reset} disabled={busy||loading}><Plus size={16}/> Novo ambiente</button></div>
+  <section className="panel"><div className="panel-heading"><div><h2>Ambientes do projeto</h2><p>Cadastre cômodos e recupere suas medidas em qualquer dispositivo.</p></div><button type="button" className="outline" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy||loading}><Plus size={16}/> Novo ambiente</button></div>
    {loading?<p className="hint">Carregando ambientes...</p>:rows.length===0?<p className="hint">Nenhum ambiente cadastrado.</p>:<div style={{display:'flex',flexWrap:'wrap',gap:8}}>{rows.map(row=><button key={row.id} type="button" className={selectedId===row.id?'primary':'outline'} onClick={()=>selectRow(row)} disabled={busy}>{row.title}</button>)}</div>}
    {rows.length>0&&<p className="hint">{rows.length} ambiente(s) · Soma das áreas cadastradas: {totalArea.toLocaleString('pt-BR',{maximumFractionDigits:2})} m² (não desconta sobreposições).</p>}
    {status&&<p role="status" className="hint" style={{marginTop:12}}>{status}</p>}
   </section>
-  <div className={selectedId?'ep-modal-backdrop':'ep-editor-inline'} onMouseDown={e=>{if(selectedId&&e.target===e.currentTarget&&!busy)reset()}}><section className="panel sizing-form ep-editor-card" role={selectedId?'dialog':undefined} aria-modal={selectedId?true:undefined} aria-label={selectedId?'Editar ambiente':undefined}><div className="ep-editor-heading"><h2>{selectedId?'Editar ambiente':'Novo ambiente'}</h2>{selectedId&&<button type="button" className="ep-close" aria-label="Fechar" onClick={reset} disabled={busy}><X size={20}/></button>}</div>
+  {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)reset()}}><section className="panel sizing-form ep-editor-card" role="dialog" aria-modal={true} aria-label={selectedId?'Editar ambiente':'Novo ambiente'}><div className="ep-editor-heading"><h2>{selectedId?'Editar ambiente':'Novo ambiente'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" onClick={reset} disabled={busy}><X size={20}/></button>}</div>
    <label>Nome do ambiente<input maxLength={120} value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex.: Sala de estar"/></label>
    <label>Tipo de ambiente<select value={kind} onChange={e=>setKind(e.target.value)}>{environmentTypes.map(t=><option key={t} value={t}>{t}</option>)}</select></label>
    <div className="two"><label>Largura (m)<input type="number" min="0.01" step="any" value={width} onChange={e=>setWidth(e.target.value)} placeholder="Ex.: 3,5"/></label><label>Comprimento (m)<input type="number" min="0.01" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 4"/></label></div>
@@ -144,11 +145,12 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
    <label>Observações (opcional)<textarea rows={3} maxLength={2000} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Informações do ambiente"/></label>
    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" className="primary" disabled={loading||busy||!projectId||!title.trim()||!dimensionsValid} onClick={()=>void save()}>{busy?'Aguarde...':selectedId?'Atualizar ambiente':'Salvar ambiente'}</button>{selectedId&&<button type="button" className="outline" disabled={busy} onClick={()=>void remove()}>Excluir ambiente</button>}</div>
    <p className="hint">Área geométrica (largura × comprimento). As cargas não são calculadas automaticamente.</p>
-  </section></div>
+  <button type="button" className="outline" onClick={reset} disabled={busy}>Fechar</button></section></div>}
  </div>;
 }
 type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
 function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings;clientId:string;userId:string}){
+ const [editorOpen,setEditorOpen]=useState(false);
  const [environmentId,setEnvironmentId]=useState(''),[environmentOptions,setEnvironmentOptions]=useState<SavedEnvironment[]>([]),[materialSending,setMaterialSending]=useState(false);
  const [circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[material,setMaterial]=useState('copper');
  const [wiring,setWiring]=useState('phase-neutral');
@@ -161,11 +163,11 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   const [circuitLoading,setCircuitLoading]=useState(true);
   const circuitRequest=React.useRef(0);
   useEffect(()=>{if(!selectedCircuitId)return;const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!circuitBusy)clearCircuit()};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[selectedCircuitId,circuitBusy]);
-  const clearCircuit=()=>{setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf('1');setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount('1');setEnvironmentId('');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
+  const clearCircuit=()=>{setEditorOpen(false);setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf('1');setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount('1');setEnvironmentId('');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
   const selectSavedCircuit=(row:SavedCircuit)=>{
     const d=row.data||{};
     const val=(key:string,fallback:string)=>typeof d[key]==='string'?String(d[key]):fallback;
-    setEnvironmentId(val('environmentId',''));setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(val('pf','1'));setLength(val('length',''));setMaterial(val('material','copper'));setWiring(val('wiring','phase-neutral'));setInsulation(val('insulation','PVC 70 °C'));setGroupCount(val('groupCount','1'));setCircuitStatus('Circuito carregado.');
+    setEditorOpen(true);setEnvironmentId(val('environmentId',''));setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(val('pf','1'));setLength(val('length',''));setMaterial(val('material','copper'));setWiring(val('wiring','phase-neutral'));setInsulation(val('insulation','PVC 70 °C'));setGroupCount(val('groupCount','1'));setCircuitStatus('Circuito carregado.');
   };
   useEffect(()=>{
     const request=++circuitRequest.current;
@@ -312,13 +314,13 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const noCompliantCandidate=supported&&current!==null&&lengthValid&&!electricalCandidate;
  const fmt=(n:number,d=2)=>n.toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
  const reset=()=>{setPower('');setPf('1');setLength('');setGroupCount('1')};
- return <><section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><h2>Circuitos do projeto</h2><p>Cadastre vários circuitos e recupere seus dados em qualquer dispositivo.</p></div><button type="button" className="outline" disabled={circuitBusy} onClick={clearCircuit}><Plus size={16}/> Novo circuito</button></div>
+ return <><section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><h2>Circuitos do projeto</h2><p>Cadastre vários circuitos e recupere seus dados em qualquer dispositivo.</p></div><button type="button" className="outline" disabled={circuitBusy} onClick={()=>{clearCircuit();setEditorOpen(true)}}><Plus size={16}/> Novo circuito</button></div>
   {circuitLoading?<p className="hint">Carregando circuitos...</p>:savedCircuits.length===0?<p className="hint">Nenhum circuito salvo neste projeto.</p>:<div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:12}}>{savedCircuits.map(x=><button type="button" key={x.id} className={selectedCircuitId===x.id?'primary':'outline'} onClick={()=>selectSavedCircuit(x)}>{x.title}</button>)}</div>}
-  </section><div className={selectedCircuitId?'ep-modal-backdrop':'ep-editor-inline'} onMouseDown={e=>{if(selectedCircuitId&&e.target===e.currentTarget&&!circuitBusy)clearCircuit()}}><div className="ep-circuit-editor" role={selectedCircuitId?'dialog':undefined} aria-modal={selectedCircuitId?true:undefined} aria-label={selectedCircuitId?'Editar circuito':undefined}><section className="panel ep-circuit-details"><div className="ep-editor-heading"><h2>{selectedCircuitId?'Editar circuito':'Novo circuito'}</h2>{selectedCircuitId&&<button type="button" className="ep-close" aria-label="Fechar" disabled={circuitBusy} onClick={clearCircuit}><X size={20}/></button>}</div><label>Ambiente associado (opcional)<select value={environmentId} onChange={e=>setEnvironmentId(e.target.value)}><option value="">Sem ambiente associado</option>{environmentOptions.map(x=><option key={x.id} value={x.id}>{x.title}</option>)}</select></label>
+  </section>{editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!circuitBusy)clearCircuit()}}><div className="ep-circuit-editor" role="dialog" aria-modal={true} aria-label={selectedCircuitId?'Editar circuito':'Novo circuito'}><section className="panel ep-circuit-details"><div className="ep-editor-heading"><h2>{selectedCircuitId?'Editar circuito':'Novo circuito'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" disabled={circuitBusy} onClick={clearCircuit}><X size={20}/></button>}</div><label>Ambiente associado (opcional)<select value={environmentId} onChange={e=>setEnvironmentId(e.target.value)}><option value="">Sem ambiente associado</option>{environmentOptions.map(x=><option key={x.id} value={x.id}>{x.title}</option>)}</select></label>
   <label>Nome do circuito<input value={circuitTitle} onChange={e=>setCircuitTitle(e.target.value)} placeholder="Ex.: C1 - Iluminação da sala"/></label>
   <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button type="button" className="primary" disabled={circuitBusy||circuitLoading||!circuitTitle.trim()} onClick={()=>void saveCircuit()}>{circuitBusy?'Aguarde...':selectedCircuitId?'Atualizar circuito':'Salvar circuito'}</button>{selectedCircuitId&&<button type="button" className="outline" disabled={circuitBusy} onClick={()=>void deleteCircuit()}>Excluir circuito</button>}</div>
   {circuitStatus&&<p className="hint" role="status">{circuitStatus}</p>}
-  <p className="hint">Os dados elétricos abaixo são salvos ao clicar em Salvar/Atualizar circuito. Os resultados são recalculados com os parâmetros atuais de instalação; um resumo também é registrado ao salvar.</p></section><div className="sizing-layout"><section className="panel sizing-form"><div className="panel-heading"><h2>Dimensionamento de condutores · v0.7.18</h2><button type="button" className="outline" onClick={reset}>Limpar</button></div><p>Estudo preliminar para instalações de baixa tensão. Informe os dados do circuito. A seção é pré-selecionada automaticamente pelos critérios de capacidade de corrente tabelada e queda de tensão resistiva estimada na temperatura nominal do condutor. O sistema utiliza automaticamente 4% como referência provisória para este trecho.</p>
+  <p className="hint">Os dados elétricos abaixo são salvos ao clicar em Salvar/Atualizar circuito. Os resultados são recalculados com os parâmetros atuais de instalação; um resumo também é registrado ao salvar.</p></section><div className="sizing-layout"><section className="panel sizing-form"><div className="panel-heading"><h2>Dimensionamento de condutores · v0.7.18</h2><button type="button" className="outline" onClick={reset}>Limpar</button></div><p></p>
  <label>Tipo de circuito<select value={circuit} onChange={e=>setCircuit(e.target.value)}><option value="lighting">Iluminação</option><option value="tug">Tomadas de uso geral</option><option value="tue">Circuito dedicado / TUE</option><option value="motor">Motor / máquina</option><option value="feeder">Alimentador</option><option value="other">Outro</option></select></label>
  <h3>1. Dados elétricos</h3><div className="two"><label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label><label>Tensão definida na instalação<input value={`${voltage||'Não definida'} V`} disabled/></label></div>
  <div className="two"><label>Fornecimento<input value={settings.supply==='single'?'Monofásico':settings.supply==='two'?'Bifásico':'Trifásico'} disabled/></label><label>Fator de potência<input type="number" min="0.01" max="1" step="0.01" value={pf} onChange={e=>setPf(e.target.value)}/></label></div>
@@ -348,7 +350,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  <div className="sizing-metric"><span>Curva pré-indicada</span><strong>{tripCurve?`Curva ${tripCurve}`:'Não determinada'}</strong></div>
  </div>
  <p className="hint">Pré-dimensionamento orientativo. A seleção do cabo e do disjuntor exige verificações técnicas complementares antes da aplicação.</p>
-  <span className="plan-chip">v0.7.19 · circuitos no Supabase</span></section></div></div></div></>
+  <span className="plan-chip">v0.7.25 · circuitos no Supabase</span></section><button type="button" className="outline ep-modal-close-bottom" onClick={clearCircuit} disabled={circuitBusy}>Fechar</button></div></div></div>}</>
 }
 
 type MaterialRow={id:string;description:string;quantity:number;unit:string;unit_price:number};
@@ -370,6 +372,7 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
  const [rows,setRows]=useState<MaterialRow[]>([]),[projectId,setProjectId]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState('');
  const [description,setDescription]=useState(''),[quantity,setQuantity]=useState('1'),[unit,setUnit]=useState('un'),[unitPrice,setUnitPrice]=useState('0');
  const [editingId,setEditingId]=useState<string|null>(null);
+ const [editorOpen,setEditorOpen]=useState(false);
  const [refreshCount,setRefreshCount]=useState(0);
  useEffect(()=>{
   let live=true;setRows([]);setProjectId('');setStatus('Carregando materiais...');
@@ -382,7 +385,7 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
   }catch(e){if(live)setStatus('Erro ao carregar materiais: '+(e instanceof Error?e.message:String(e)))}})();
   return()=>{live=false};
  },[clientId,userId,refreshCount]);
- const reset=()=>{setEditingId(null);setDescription('');setQuantity('1');setUnit('un');setUnitPrice('0')};
+ const reset=()=>{setEditorOpen(false);setEditingId(null);setDescription('');setQuantity('1');setUnit('un');setUnitPrice('0')};
  async function save(){
   if(!supabase||!projectId||busy)return;
   const q=Number(quantity),price=Number(unitPrice),desc=description.trim();
@@ -410,16 +413,16 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
   setBusy(false);if(result.error){setStatus('Erro na importação: '+result.error.message);return}
   setRefreshCount(x=>x+1);
  }
- return <section className="panel"><h2>Materiais do projeto · Supabase</h2><p>Materiais vinculados a este cliente, disponíveis em outros dispositivos. O orçamento continua como rascunho local nesta versão.</p>
+ return <section className="panel"><div className="panel-heading"><div><h2>Materiais do projeto</h2><p>Materiais vinculados ao cliente, sincronizados pelo Supabase.</p></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Cadastrar material</button></div>
  <p className="hint" role="status">{status}</p>
- <div style={{overflowX:'auto'}}><table style={{width:'100%',minWidth:590}}><thead><tr><th>Descrição</th><th>Quantidade</th><th>Un.</th><th>Preço un.</th><th>Ações</th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{r.description}</td><td>{Number(r.quantity).toLocaleString('pt-BR')}</td><td>{r.unit}</td><td>{moneyBR(Number(r.unit_price))}</td><td><button className="outline" disabled={busy} onClick={()=>{setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price))}}>Editar</button> <button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></td></tr>)}</tbody></table></div>
+ <div style={{overflowX:'auto'}}><table style={{width:'100%',minWidth:590}}><thead><tr><th>Descrição</th><th>Quantidade</th><th>Un.</th><th>Preço un.</th><th>Ações</th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{r.description}</td><td>{Number(r.quantity).toLocaleString('pt-BR')}</td><td>{r.unit}</td><td>{moneyBR(Number(r.unit_price))}</td><td><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price))}}>Editar</button> <button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></td></tr>)}</tbody></table></div>
  {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
- <p><strong>Total dos materiais: {moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></p>
- <div className="sizing-metric" style={{padding:16}}><h3>{editingId?'Editar material':'Novo material'}</h3>
+ <div className="ep-total-highlight"><span>Valor total dos materiais</span><strong>{moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></div>
+ {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)reset()}}><div className="panel sizing-form ep-editor-card" role="dialog" aria-modal={true} aria-label={editingId?'Editar material':'Cadastrar material'}><div className="ep-editor-heading"><h3>{editingId?'Editar material':'Cadastrar material'}</h3><button type="button" className="ep-close" aria-label="Fechar" onClick={reset} disabled={busy}><X size={20}/></button></div>
  <label>Descrição<input value={description} onChange={e=>setDescription(e.target.value)}/></label>
  <div className="two"><label>Quantidade<input type="number" min="0" step="0.001" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label><label>Unidade<select value={unit} onChange={e=>setUnit(e.target.value)}><option value="un">un</option><option value="m">m</option><option value="m²">m²</option><option value="h">h</option><option value="kg">kg</option></select></label></div>
  <label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={unitPrice} onChange={e=>setUnitPrice(e.target.value)}/></label>
- <button className="primary" disabled={busy||!projectId||!description.trim()} onClick={()=>void save()}>{editingId?'Atualizar material':'Salvar material'}</button> {editingId&&<button className="outline" onClick={reset}>Cancelar</button>}</div>
+ <button className="primary" disabled={busy||!projectId||!description.trim()} onClick={()=>void save()}>{editingId?'Atualizar material':'Salvar material'}</button> <button type="button" className="outline" onClick={reset} disabled={busy}>Fechar</button></div></div>}
  {localBudget.length>0&&<div style={{marginTop:16}}><button className="outline" disabled={busy||!projectId} onClick={()=>void importBudget()}>Importar {localBudget.length} itens do orçamento local</button><p className="hint">Importação opcional. Confira duplicidades antes de importar novamente. O orçamento local não será apagado.</p></div>}
  </section>
 }
@@ -434,6 +437,7 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  const [budgets,setBudgets]=useState<CloudBudget[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
  const [title,setTitle]=useState('Novo orçamento');
+ const [editorOpen,setEditorOpen]=useState(false);
  const [items,setItems]=useState<BudgetEditItem[]>([]);
  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[dirty,setDirty]=useState(false);
  const [status,setStatus]=useState('');
@@ -458,7 +462,7 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  };
  useEffect(()=>{
   const req=++request.current;
-  setProjectId('');setBudgets([]);setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setLoading(true);setStatus('Carregando orçamentos...');
+  setEditorOpen(false);setProjectId('');setBudgets([]);setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setLoading(true);setStatus('Carregando orçamentos...');
   void (async()=>{try{
    if(!supabase)throw new Error('Supabase indisponível');
    const id=await ensureEletriProject(clientId,userId);
@@ -478,13 +482,14 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  },[clientId,userId]);
  async function selectBudget(row:CloudBudget){
   if(busy||loading||!confirmDiscard())return;
-  const req=++request.current;setLoading(true);setSelection(row.id);setTitle(row.title);setItems([]);updateDirty(false);setStatus('Carregando itens...');
+  const req=++request.current;setEditorOpen(true);setLoading(true);setSelection(row.id);setTitle(row.title);setItems([]);updateDirty(false);setStatus('Carregando itens...');
   await loadItems(row.id,req);
   if(req===request.current)setLoading(false);
  }
+ function closeBudget(){if(busy||loading||!confirmDiscard())return;setEditorOpen(false);setItems([]);setSelection(null);setTitle('Novo orçamento');updateDirty(false)}
  function newBudget(){
   if(busy||loading||!confirmDiscard())return;
-  setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
+  setEditorOpen(true);setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
  }
  async function save(){
   if(!supabase||!projectId||busy||loading)return;
@@ -532,7 +537,7 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
   const r=await supabase.from('eletripro_budgets').delete().eq('id',id).eq('project_id',projectId);
   setBusy(false);
   if(r.error){setStatus('Erro ao excluir: '+r.error.message);return}
-  setBudgets(old=>old.filter(x=>x.id!==id));setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Orçamento excluído.');
+  setBudgets(old=>old.filter(x=>x.id!==id));setEditorOpen(false);setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Orçamento excluído.');
  }
  function importLocal(){
   if(!localBudget.length)return;
@@ -560,7 +565,7 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  {loading?<p className="hint">Carregando...</p>:budgets.length===0?<p className="hint">Nenhum orçamento salvo neste projeto.</p>:<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{budgets.map(b=><button key={b.id} type="button" disabled={busy} className={selectedId===b.id?'primary':'outline'} onClick={()=>void selectBudget(b)}>{b.title}</button>)}</div>}
  <p className="hint" role="status">{status}</p>
  </section>
- <div className={selectedId?'ep-modal-backdrop':'ep-editor-inline'} onMouseDown={e=>{if(selectedId&&e.target===e.currentTarget&&!busy)newBudget()}}><section className="panel ep-editor-card" role={selectedId?'dialog':undefined} aria-modal={selectedId?true:undefined} aria-label={selectedId?'Editar orçamento':undefined}><div className="ep-editor-heading"><h2>{selectedId?'Editar orçamento':'Novo orçamento'}</h2>{selectedId&&<button type="button" className="ep-close" aria-label="Fechar" disabled={busy} onClick={newBudget}><X size={20}/></button>}</div>
+ {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)closeBudget()}}><section className="panel ep-editor-card" role="dialog" aria-modal={true} aria-label={selectedId?'Editar orçamento':'Novo orçamento'}><div className="ep-editor-heading"><h2>{selectedId?'Editar orçamento':'Novo orçamento'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" disabled={busy||loading} onClick={closeBudget}><X size={20}/></button>}</div>
  <label>Nome do orçamento<input maxLength={160} value={title} disabled={busy||loading} onChange={e=>{setTitle(e.target.value);updateDirty(true)}} placeholder="Ex.: Instalação elétrica - residência"/></label>
  <div style={{display:'flex',gap:8,flexWrap:'wrap',margin:'12px 0'}}>
  <button type="button" className="outline" disabled={busy||loading||!localBudget.length} onClick={importLocal}>Importar rascunho local ({localBudget.length})</button>
@@ -587,7 +592,7 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  </div>
  {dirty&&<p className="hint">Há alterações não salvas no Supabase.</p>}
  <p className="hint">O rascunho local continua disponível no navegador e não é excluído automaticamente. Os orçamentos salvos podem ser abertos em outro dispositivo.</p>
- </section></div></div>;
+ <button type="button" className="outline" disabled={busy||loading} onClick={closeBudget}>Fechar</button></section></div>} </div>;
 }
 
 function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState('Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false);
@@ -677,5 +682,5 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Materiais'&&activeClient&&<MaterialsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {tab==='Orçamentos'&&activeClient&&<BudgetsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.24.1 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.25.1 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
