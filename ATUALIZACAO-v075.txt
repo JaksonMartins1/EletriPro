@@ -1,0 +1,11 @@
+EletriPro v0.7.5 — pré-dimensionamento com dados tabelados
+
+Base: ABNT NBR 5410:2004 (PDF fornecido pelo usuário).
+Tabelas 36/37: capacidades B1/B2/C, cobre e alumínio, PVC 70 °C e EPR/XLPE 90 °C, 2/3 condutores carregados, seções até 300 mm².
+Tabela 40: fatores de temperatura ambiente no ar.
+Tabela 42: agrupamento em feixe/conduto fechado (linha 1); método C também permite camada única sobre parede/piso/bandeja não perfurada (linha 2).
+Queda de tensão: modelo resistivo aproximado na temperatura nominal do condutor (70 ou 90 °C), sem reatância; limite de 4% é provisório e não representa verificação normativa completa.
+
+Limitações: não contempla harmônicas, carregamento de neutro, cabos paralelos, temperatura real do condutor, outras formas de agrupamento, proteção, curto-circuito e verificação integral da instalação. A seção pré-selecionada não constitui especificação final.
+
+Instalação: substituir os arquivos no repositório pela versão deste ZIP e publicar na Netlify. Nenhuma migração SQL necessária.
