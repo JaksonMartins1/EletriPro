@@ -35,7 +35,7 @@ function InstallationSetup({settings,onChange}:{settings:InstallationSettings;on
  <div className="two"><label>Temperatura ambiente (°C)<select value={settings.temperature} onChange={e=>update('temperature',e.target.value)}><option value="">Selecione</option>{['10','15','20','25','30','35','40','45','50','55','60','65','70','75','80'].map(t=><option key={t} value={t}>{t} °C</option>)}</select></label><label>Disposição do agrupamento<select value={settings.groupMode} onChange={e=>update('groupMode',e.target.value)}><option value="bundle">Feixe ou conduto fechado (tabela 42, linha 1)</option>{settings.method==='C'&&<option value="singleLayer">Camada única sobre parede/piso (linha 2)</option>}</select></label></div>
  <h3>Parâmetros gerais dos circuitos</h3>
  <div className="two"><label>Fator de potência padrão<input type="number" min="0.01" max="1" step="0.01" value={settings.powerFactor} onChange={e=>update('powerFactor',e.target.value)}/></label><label>Material dos condutores<select value={settings.conductorMaterial} onChange={e=>update('conductorMaterial',e.target.value)}><option value="copper">Cobre</option><option value="aluminum">Alumínio</option></select></label></div>
- <div className="two"><label>Isolação<select value={settings.conductorInsulation} onChange={e=>update('conductorInsulation',e.target.value)}><option>PVC 70 °C</option><option>EPR / XLPE 90 °C</option><option>Outra — verificar tabela</option></select></label><label>Quantidade de circuitos agrupados<select value={settings.groupCount} onChange={e=>update('groupCount',e.target.value)}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label></div>
+ <div className="two"><label>Isolação<select value={settings.conductorInsulation} onChange={e=>update('conductorInsulation',e.target.value)}><option>PVC 70 °C</option><option>EPR / XLPE 90 °C</option><option>Outra — verificar tabela</option></select></label></div>
  {settings.supply==='two'&&<label>Composição dos condutores<select value={settings.wiring} onChange={e=>update('wiring',e.target.value)}><option value="phase-neutral">Fase + neutro</option><option value="phase-phase">Duas fases (sem neutro)</option></select></label>}
  <p className="hint">Estes valores são padrões do projeto para o cálculo preliminar. Em instalações reais, o fator de potência, o agrupamento e a composição podem variar entre circuitos e devem ser verificados individualmente.</p>
  <p className="hint">Os parâmetros são salvos neste navegador. A tensão informada é a tensão do circuito a dimensionar; confirme a tensão fase-neutro ou fase-fase conforme a ligação. Circuitos trifásicos ainda não possuem pré-seleção automática validada.</p></section>
@@ -177,11 +177,11 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   const [circuitLoading,setCircuitLoading]=useState(true);
   const circuitRequest=React.useRef(0);
   useEffect(()=>{if(!selectedCircuitId)return;const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!circuitBusy)clearCircuit()};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[selectedCircuitId,circuitBusy]);
-  const clearCircuit=()=>{setViewMode(false);setEditorOpen(false);setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf(settings.powerFactor);setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount('1');setEnvironmentId('');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
+  const clearCircuit=()=>{setViewMode(false);setEditorOpen(false);setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf(settings.powerFactor);setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount(settings.groupCount);setEnvironmentId('');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
   const selectSavedCircuit=(row:SavedCircuit)=>{
     const d=row.data||{};
     const val=(key:string,fallback:string)=>typeof d[key]==='string'?String(d[key]):fallback;
-    setEditorOpen(true);setViewMode(true);setEnvironmentId(val('environmentId',''));setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(settings.powerFactor);setLength(val('length',''));setMaterial(settings.conductorMaterial);setWiring(settings.wiring);setInsulation(settings.conductorInsulation);setGroupCount(settings.groupCount);setCircuitStatus('Circuito carregado.');
+    setEditorOpen(true);setViewMode(true);setEnvironmentId(val('environmentId',''));setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(settings.powerFactor);setLength(val('length',''));setMaterial(settings.conductorMaterial);setWiring(settings.wiring);setInsulation(settings.conductorInsulation);setGroupCount(val('groupCount',settings.groupCount));setCircuitStatus('Circuito carregado.');
   };
   useEffect(()=>{
     const request=++circuitRequest.current;
@@ -212,7 +212,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     setCircuitBusy(true);setCircuitStatus('');
     const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
     if(pe||!project){setCircuitStatus(pe?'Erro: '+pe.message:'Salve primeiro o Tipo de instalação.');setCircuitBusy(false);return}
-    const data={environmentId:environmentId||null,circuit,power,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
+    const data={environmentId:environmentId||null,circuit,power,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
     const result=selectedCircuitId
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
@@ -257,7 +257,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const {method,temperature,groupMode}=settings;
  const effectiveMaterial=settings.conductorMaterial;
  const effectiveInsulation=settings.conductorInsulation;
- const effectiveGroupCount=settings.groupCount;
+ const effectiveGroupCount=groupCount;
  const effectivePf=settings.powerFactor;
  const phases=settings.supply==='three'?'three':'single';
  const loaded=settings.supply==='three'?'3':'2';
@@ -267,7 +267,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const p=num(power),v=num(voltage),f=num(effectivePf),l=num(length);
  const ft=temperature5410[effectiveInsulation]?.[temperature];
  const fg=grouping5410[groupMode]?.[effectiveGroupCount];
- const valid=Number.isFinite(p)&&p>0&&Number.isFinite(v)&&v>0&&Number.isFinite(f)&&f>0&&f<=1;
+ const valid=Number.isFinite(p)&&p>0&&Number.isFinite(l)&&l>0&&Number.isFinite(v)&&v>0&&Number.isFinite(f)&&f>0&&f<=1;
  const current=valid?p/(v*f*(phases==='three'?Math.sqrt(3):1)):null;
  const rho=effectiveMaterial==='copper'?0.0175:0.0282;
  const alpha=effectiveMaterial==='copper'?0.00393:0.00403;
@@ -326,7 +326,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const breakerConventionalOk=breakerI2!==null&&corrected!==null&&breakerI2<=1.45*corrected;
  // A curva é apenas uma hipótese preliminar por categoria; cargas reais podem ter picos de partida.
  // O módulo não calcula curto-circuito nem verifica capacidade de interrupção.
- const tripCurve=(circuit==='lighting'?'B':circuit==='tug'?'C':null);
+ const tripCurve=(circuit==='lighting'||circuit==='tug')?'C':(circuit==='tue'&&/chuveiro|torneira el[eé]trica|aquecedor resistivo|resist[eê]ncia/i.test(circuitTitle))?'B':null;
  const raisedForBreaker=electricalCandidate!==null&&candidate!==null&&candidate.size>electricalCandidate.size;
  const noBreakerSolution=electricalCandidate!==null&&candidate===null;
  const noCompliantCandidate=supported&&current!==null&&lengthValid&&!electricalCandidate;
@@ -335,8 +335,8 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  return <><section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><h2>Circuitos do projeto</h2><p>Cadastre vários circuitos e recupere seus dados em qualquer dispositivo.</p></div><button type="button" className="outline" disabled={circuitBusy} onClick={()=>{clearCircuit();setViewMode(false);setEditorOpen(true)}}><Plus size={16}/> Novo circuito</button></div>
   {circuitLoading?<p className="hint">Carregando circuitos...</p>:savedCircuits.length===0?<p className="hint">Nenhum circuito salvo neste projeto.</p>:<div className="ep-circuit-list">{savedCircuits.map((x,i)=><button type="button" key={x.id} className="ep-circuit-list-item" onClick={()=>selectSavedCircuit(x)}><span className="ep-circuit-index">{String(i+1).padStart(2,'0')}</span><span>{x.title}</span><span className="ep-circuit-arrow">›</span></button>)}</div>}
   </section>{editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!circuitBusy)clearCircuit()}}><div className="ep-circuit-editor" role="dialog" aria-modal={true} aria-label={selectedCircuitId?'Editar circuito':'Novo circuito'}><div className="ep-editor-heading"><h2>{selectedCircuitId?(viewMode?circuitTitle:'Editar circuito'):'Novo circuito'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" disabled={circuitBusy} onClick={clearCircuit}><X size={20}/></button>}</div>{viewMode&&selectedCircuitId?<section className="panel ep-circuit-details"><div className="ep-summary">
- <div className="ep-summary-grid"><div><span>Seção do condutor</span><strong>{selectedSection===null?'Não calculada':`${fmt(selectedSection)} mm²`}</strong></div><div><span>Disjuntor</span><strong>{breakerCandidate===null?'Não dimensionado':`${breakerCandidate} A`}</strong></div></div>
- <p className="hint">{circuit==='tug'&&/ilumina/i.test(circuitTitle)?'Atenção: este circuito está cadastrado como TUG, apesar do nome indicar iluminação. Clique em Editar e corrija o tipo para aplicar seção mínima de 1,5 mm². ':''}Resultado preliminar recalculado a partir dos parâmetros do circuito. Iluminação: disjuntor mínimo configurado de 10 A; tomadas de uso geral: mínimo de 16 A, sempre sujeito à coordenação Ib ≤ In ≤ Iz. A NBR 5410 não estabelece esses valores como mínimos universais.</p>
+ <div className="ep-summary-grid"><div><span>Seção do condutor</span><strong>{selectedSection===null?'—':`${fmt(selectedSection)} mm²`}</strong></div><div><span>Disjuntor</span><strong>{breakerCandidate===null?'—':`${breakerCandidate} A`}</strong></div></div>
+ <p className="hint">{circuit==='tug'&&/ilumina/i.test(circuitTitle)?'Atenção: este circuito está cadastrado como TUG, apesar do nome indicar iluminação. Clique em Editar e corrija o tipo para aplicar seção mínima de 1,5 mm². ':''}Cálculo preliminar. Confirmar a coordenação Ib ≤ In ≤ Iz e as condições de proteção antes da especificação.</p>
  <div className="ep-summary-actions"><button type="button" className="primary" onClick={()=>setViewMode(false)}>Editar</button><button type="button" className="outline" disabled={circuitBusy} onClick={()=>void deleteCircuit()}>Excluir</button><button type="button" className="outline" onClick={clearCircuit}>Fechar</button></div>
  </div></section>:<><section className="panel ep-circuit-details"><label>Ambiente associado (opcional)<select value={environmentId} onChange={e=>setEnvironmentId(e.target.value)}><option value="">Sem ambiente associado</option>{environmentOptions.map(x=><option key={x.id} value={x.id}>{x.title}</option>)}</select></label>
   <label>Nome do circuito<input value={circuitTitle} onChange={e=>setCircuitTitle(e.target.value)} placeholder="Ex.: C1 - Iluminação da sala"/></label>
@@ -344,9 +344,9 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   {circuitStatus&&<p className="hint" role="status">{circuitStatus}</p>}
   </section><div className="sizing-layout"><section className="panel sizing-form"><h2>Dados do circuito</h2>
  <label>Tipo de circuito<select value={circuit} onChange={e=>setCircuit(e.target.value)}><option value="lighting">Iluminação</option><option value="tug">Tomadas de uso geral</option><option value="tue">Circuito dedicado / TUE</option><option value="motor">Motor / máquina</option><option value="feeder">Alimentador</option><option value="other">Outro</option></select></label>
- <h3>Dados elétricos</h3><div className="two"><label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label><label>Comprimento de ida (m)<input type="number" min="0" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 15"/></label></div>
- <p className="hint">Tensão: {voltage} V · Método: {method} · Temperatura: {temperature} °C · Material: {effectiveMaterial==='copper'?'cobre':'alumínio'}. Para alterar os padrões, acesse Tipo de instalação.</p></section>
- <section className="panel sizing-results"><h2>Resultados e verificações</h2><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção pré-selecionada (não validada)</span><strong>{selectedSection===null?'Pendente de validação':`${String(selectedSection).replace('.',',')} mm²`}</strong><small>Capacidade tabelada, queda resistiva e coordenação básica hipotética com disjuntor; faltam verificações normativas complementares.</small></div><div className="sizing-metric"><span>Capacidade corrigida tabelada (Iz)</span><strong>{corrected===null?'Pendente de base técnica':`${fmt(corrected)} A`}</strong>{corrected!==null&&current!==null&&<small>{corrected>=current?'Iz ≥ Ib para as condições tabeladas':'Iz < Ib — revisar circuito'}</small>}</div><div className="sizing-metric"><span>Queda de tensão resistiva estimada (temperatura nominal)</span><strong>{drop===null?'Pendente':`${fmt(drop)} V`}</strong>{pct!==null&&<small>{fmt(pct)}% da tensão informada</small>}</div>
+ <h3>Dados elétricos</h3><label>Quantidade de circuitos agrupados<select value={groupCount} onChange={e=>setGroupCount(e.target.value)}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label><div className="two"><label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label><label>Comprimento de ida (m)<input type="number" min="0" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 15"/></label></div>
+ <details className="ep-details"><summary>Parâmetros gerais utilizados</summary><p className="hint">Tensão: {voltage} V · Método: {method} · Temperatura: {temperature} °C · Material: {effectiveMaterial==='copper'?'cobre':'alumínio'}. Altere os padrões em Tipo de instalação.</p></details></section>
+ <section className="panel sizing-results"><h2>Seção do condutor</h2><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção do condutor/Bitola</span><strong>{selectedSection===null?'—':`${String(selectedSection).replace('.',',')} mm²`}</strong></div>
  {noCompliantCandidate&&<div className="sizing-warning"><strong>Nenhuma seção aprovada no modelo experimental</strong><p>Não foi encontrada seção que atenda simultaneamente à corrente e ao limite provisório de 4% dentro da base provisória. Não use esse resultado para especificação.</p></div>}
  {current!==null&&!supported&&<div className="sizing-warning"><strong>Condição não contemplada</strong><p>Esta condição não está coberta pelas tabelas e hipóteses implementadas. Não é possível pré-selecionar a seção automaticamente.</p></div>}
  {noBreakerSolution&&<div className="sizing-warning"><strong>Sem combinação preliminar de cabo e disjuntor</strong><p>Há seção que atende à corrente e à queda estimada, mas nenhuma das seções disponíveis permite um disjuntor da lista com Ib ≤ In ≤ Iz. Não selecione um disjuntor acima da capacidade corrigida do condutor.</p></div>}
@@ -360,12 +360,12 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  </tbody></table></div>
  <p><strong>Resultado:</strong> {String(candidate.size).replace('.',',')} mm² e disjuntor {breakerCandidate} A. {raisedForBreaker?'A seção aumentou para viabilizar a coordenação com disjuntor.':electricalCandidate&&currentOnly&&electricalCandidate.size>currentOnly.size?'A seção aumentou por queda de tensão.':'A primeira seção aprovada também permite a coordenação.'}</p>
  <small>Memória demonstrativa do modelo preliminar. Não substitui verificações normativas e características reais dos dispositivos.</small></details>}
- <div className="sizing-formula"><strong>3. Coordenação preliminar com disjuntor</strong>
- <div className="sizing-metric"><span>Corrente nominal pré-selecionada (In)</span><strong>{breakerCandidate===null?'Sem seleção':`${breakerCandidate.toLocaleString('pt-BR',{maximumFractionDigits:0})} A`}</strong></div>
- <div className="sizing-metric"><span>Curva pré-indicada</span><strong>{tripCurve?`Curva ${tripCurve}`:'Não determinada'}</strong></div>
+ <div className="sizing-formula"><strong>Disjuntor</strong>
+ <div className="sizing-metric"><span>Corrente nominal (In)</span><strong>{breakerCandidate===null?'—':`${breakerCandidate.toLocaleString('pt-BR',{maximumFractionDigits:0})} A`}</strong></div>
+ <div className="sizing-metric"><span>Curva de disparo</span><strong>{breakerCandidate!==null&&tripCurve?`Curva ${tripCurve}`:'—'}</strong></div>
  </div>
- <p className="hint">Pré-dimensionamento orientativo. A seleção do cabo e do disjuntor exige verificações técnicas complementares antes da aplicação.</p>
-  <span className="plan-chip">v0.7.27 · circuitos no Supabase</span></section></div>
+ 
+  <span className="plan-chip">v0.7.28 · circuitos no Supabase</span></section></div>
  <div className="ep-modal-actions"><button type="button" className="primary" disabled={circuitBusy||circuitLoading||!circuitTitle.trim()||!Number.isFinite(p)||p<=0||!Number.isFinite(l)||l<=0} onClick={()=>void saveCircuit()}>{circuitBusy?'Salvando...':selectedCircuitId?'Atualizar circuito':'Salvar circuito'}</button>{selectedCircuitId&&<button type="button" className="outline" disabled={circuitBusy} onClick={()=>void deleteCircuit()}>Excluir circuito</button>}</div></>}<button type="button" className="outline ep-modal-close-bottom" onClick={clearCircuit} disabled={circuitBusy}>Fechar</button></div></div>}</>
 }
 
