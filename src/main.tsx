@@ -59,6 +59,93 @@ const budgetCableItems=(params:{length:number;size:number;material:string;insula
  return items;
 };
 const moneyBR=(n:number)=>n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
+
+// v0.7.20 — Ambientes persistidos por projeto; area geometrica, sem dimensionamento automatico de cargas.
+type SavedEnvironment={id:string;title:string;data:Record<string,unknown>};
+const environmentTypes=['Sala','Quarto','Cozinha','Banheiro','Lavanderia','Corredor','Garagem','Área externa','Escritório','Outro'];
+function Environments({clientId,userId}:{clientId:string;userId:string}){
+ const [rows,setRows]=useState<SavedEnvironment[]>([]);
+ const [selectedId,setSelectedId]=useState<string|null>(null);
+ const [title,setTitle]=useState('');
+ const [kind,setKind]=useState('Sala');
+ const [width,setWidth]=useState('');
+ const [length,setLength]=useState('');
+ const [notes,setNotes]=useState('');
+ const [projectId,setProjectId]=useState<string|null>(null);
+ const [loading,setLoading]=useState(true);
+ const [busy,setBusy]=useState(false);
+ const [status,setStatus]=useState('');
+ const request=React.useRef(0);
+ const parseDimension=(value:string)=>Number(value.trim().replace(',','.'));
+ const w=width.trim()?parseDimension(width):NaN;
+ const l=length.trim()?parseDimension(length):NaN;
+ const dimensionsValid=Number.isFinite(w)&&w>0&&Number.isFinite(l)&&l>0;
+ const area=dimensionsValid?w*l:null;
+ const reset=()=>{setSelectedId(null);setTitle('');setKind('Sala');setWidth('');setLength('');setNotes('');setStatus('Novo ambiente.');};
+ const selectRow=(row:SavedEnvironment)=>{
+  const d=row.data||{};
+  setSelectedId(row.id);setTitle(row.title);
+  setKind(typeof d.kind==='string'?d.kind:'Outro');
+  setWidth(d.width===undefined?'':String(d.width));setLength(d.length===undefined?'':String(d.length));
+  setNotes(typeof d.notes==='string'?d.notes:'');setStatus('Ambiente carregado.');
+ };
+ useEffect(()=>{
+  const id=++request.current;
+  setLoading(true);setRows([]);setProjectId(null);setSelectedId(null);setTitle('');setKind('Sala');setWidth('');setLength('');setNotes('');setStatus('');
+  void (async()=>{
+   if(!supabase)return;
+   const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
+   if(id!==request.current)return;
+   if(pe){setStatus('Erro ao localizar projeto: '+pe.message);setLoading(false);return;}
+   if(!project){setStatus('Salve primeiro o Tipo de instalação para criar o projeto.');setLoading(false);return;}
+   setProjectId(project.id);
+   const {data,error}=await supabase.from('eletripro_environments').select('id,title,data').eq('project_id',project.id).order('created_at',{ascending:true});
+   if(id!==request.current)return;
+   if(error)setStatus('Erro ao carregar ambientes: '+error.message);
+   else setRows((data||[]) as SavedEnvironment[]);
+   setLoading(false);
+  })();
+  return()=>{request.current++};
+ },[clientId,userId]);
+ async function save(){
+  if(!supabase||!projectId||busy||loading)return;
+  if(!title.trim()){setStatus('Informe o nome do ambiente.');return;}
+  if(!dimensionsValid){setStatus('Informe comprimento e largura maiores que zero.');return;}
+  setBusy(true);setStatus('');
+  const data={kind,width:w,length:l,notes:notes.trim(),area:Math.round(w*l*100)/100};
+  const result=selectedId
+   ?await supabase.from('eletripro_environments').update({title:title.trim(),data,updated_at:new Date().toISOString()}).eq('id',selectedId).eq('project_id',projectId).select('id,title,data').single()
+   :await supabase.from('eletripro_environments').insert({project_id:projectId,title:title.trim(),data}).select('id,title,data').single();
+  if(result.error)setStatus('Erro ao salvar ambiente: '+result.error.message);
+  else if(result.data){const saved=result.data as SavedEnvironment;setRows(old=>selectedId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedId(saved.id);setStatus('Ambiente salvo no Supabase.');}
+  setBusy(false);
+ }
+ async function remove(){
+  if(!supabase||!selectedId||!projectId||busy||!window.confirm('Excluir este ambiente salvo?'))return;
+  setBusy(true);const id=selectedId;
+  const {error}=await supabase.from('eletripro_environments').delete().eq('id',id).eq('project_id',projectId);
+  if(error)setStatus('Erro ao excluir ambiente: '+error.message);
+  else{setRows(old=>old.filter(x=>x.id!==id));reset();setStatus('Ambiente excluído do Supabase.');}
+  setBusy(false);
+ }
+ const totalArea=rows.reduce((sum,row)=>{const d=row.data||{};const a=Number(d.area);return sum+(Number.isFinite(a)&&a>0?a:0)},0);
+ return <div style={{display:'grid',gap:16}}>
+  <section className="panel"><div className="panel-heading"><div><h2>Ambientes do projeto</h2><p>Cadastre cômodos e recupere suas medidas em qualquer dispositivo.</p></div><button type="button" className="outline" onClick={reset} disabled={busy||loading}><Plus size={16}/> Novo ambiente</button></div>
+   {loading?<p className="hint">Carregando ambientes...</p>:rows.length===0?<p className="hint">Nenhum ambiente cadastrado.</p>:<div style={{display:'flex',flexWrap:'wrap',gap:8}}>{rows.map(row=><button key={row.id} type="button" className={selectedId===row.id?'primary':'outline'} onClick={()=>selectRow(row)} disabled={busy}>{row.title}</button>)}</div>}
+   {rows.length>0&&<p className="hint">{rows.length} ambiente(s) · Soma das áreas cadastradas: {totalArea.toLocaleString('pt-BR',{maximumFractionDigits:2})} m² (não desconta sobreposições).</p>}
+   {status&&<p role="status" className="hint" style={{marginTop:12}}>{status}</p>}
+  </section>
+  <section className="panel sizing-form"><h2>{selectedId?'Editar ambiente':'Novo ambiente'}</h2>
+   <label>Nome do ambiente<input maxLength={120} value={title} onChange={e=>setTitle(e.target.value)} placeholder="Ex.: Sala de estar"/></label>
+   <label>Tipo de ambiente<select value={kind} onChange={e=>setKind(e.target.value)}>{environmentTypes.map(t=><option key={t} value={t}>{t}</option>)}</select></label>
+   <div className="two"><label>Largura (m)<input type="number" min="0.01" step="any" value={width} onChange={e=>setWidth(e.target.value)} placeholder="Ex.: 3,5"/></label><label>Comprimento (m)<input type="number" min="0.01" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 4"/></label></div>
+   <div className="sizing-metric"><span>Área calculada</span><strong>{area===null?'—':area.toLocaleString('pt-BR',{maximumFractionDigits:2})+' m²'}</strong></div>
+   <label>Observações (opcional)<textarea rows={3} maxLength={2000} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Informações do ambiente"/></label>
+   <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" className="primary" disabled={loading||busy||!projectId||!title.trim()||!dimensionsValid} onClick={()=>void save()}>{busy?'Aguarde...':selectedId?'Atualizar ambiente':'Salvar ambiente'}</button>{selectedId&&<button type="button" className="outline" disabled={busy} onClick={()=>void remove()}>Excluir ambiente</button>}</div>
+   <p className="hint">Área geométrica (largura × comprimento). O cadastro ainda não calcula automaticamente cargas de iluminação ou tomadas nem associa circuitos aos ambientes.</p>
+  </section>
+ </div>;
+}
 type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
 function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(items:BudgetItem[])=>void;settings:InstallationSettings;clientId:string;userId:string}){
  const [circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[material,setMaterial]=useState('copper');
@@ -315,6 +402,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div><p className="hint">Tipo de instalação pode ser salvo no Supabase. Os itens do orçamento continuam como rascunho local neste navegador.</p></section>}
 {tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation}/><section className="panel" style={{marginTop:12}}><button type="button" className="primary" disabled={installationLoading||installationSaving} onClick={saveInstallation}>{installationLoading?'Carregando projeto...':installationSaving?'Salvando...':'Salvar tipo de instalação'}</button>{installationStatus&&<p className="hint" role="status">{installationStatus}</p>}</section></>}
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} onAddToBudget={addSizingToBudget} settings={installationSettings}/>}
+{tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
 {tab==='Materiais'&&activeClient&&<section className="panel"><h2>Materiais do orçamento</h2><p>Lista provisória gerada a partir do dimensionamento. Revise quantidades e especificações antes da compra.</p>{budgetItems.length===0?<p className="hint">Nenhum material incluído. Utilize o botão em Dimensionamento.</p>:<><div style={{overflowX:'auto'}}><table style={{width:'100%'}}><thead><tr><th>Material</th><th>Quantidade</th><th>Unidade</th></tr></thead><tbody>{budgetItems.map(x=><tr key={x.id}><td>{x.description}</td><td>{x.quantity}</td><td>{x.unit}</td></tr>)}</tbody></table></div><button className="primary" onClick={()=>navigate('Orçamentos')}>Abrir orçamento</button></>}</section>}
 {tab==='Orçamentos'&&activeClient&&<section className="panel"><h2>Orçamento de materiais · rascunho</h2><p>Revise os materiais, ajuste as quantidades e os preços ou adicione itens manualmente. Rascunho por cliente salvo neste navegador, ainda não sincronizado com Supabase.</p>
 <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:'10px 8px'}}>Material / descrição</th><th style={{textAlign:'left',padding:'10px 8px',width:90}}>Quantidade</th><th style={{textAlign:'left',padding:'10px 8px',width:65}}>Un.</th><th style={{textAlign:'left',padding:'10px 8px',width:130}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:'10px 8px',width:120}}>Subtotal</th><th style={{width:48}}></th></tr></thead><tbody>{budgetItems.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:'10px 8px',fontSize:13}}>{x.description}</td><td style={{padding:'8px'}}><input aria-label={'Quantidade de '+x.description} type="number" min="0" step="any" value={x.quantity} style={{width:'100%',minWidth:70}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,quantity:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{padding:'8px',fontSize:13}}>{x.unit}</td><td style={{padding:'8px'}}><input aria-label={'Preço unitário de '+x.description} type="number" min="0" step="0.01" value={x.unitPrice} style={{width:'100%',minWidth:105}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{textAlign:'right',padding:'8px',whiteSpace:'nowrap',fontWeight:600}}>{moneyBR(x.quantity*x.unitPrice)}</td><td style={{padding:'8px'}}><button type="button" className="outline" style={{padding:'8px 10px'}} title="Remover item" aria-label={'Remover '+x.description} onClick={()=>setBudgetItems(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
@@ -322,6 +410,6 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',gap:12,margin:'18px 0',flexWrap:'wrap'}}><strong>Total de materiais</strong><strong style={{fontSize:22}}>{moneyBR(budgetItems.reduce((sum,x)=>sum+x.quantity*x.unitPrice,0))}</strong></div>
 <div className="sizing-metric" style={{padding:16}}><h3 style={{marginTop:0}}>Adicionar item manualmente</h3><label>Descrição do material ou serviço<input value={manualDescription} onChange={e=>setManualDescription(e.target.value)} placeholder="Ex.: Tomada 2P+T 10 A"/></label><div className="two"><label>Unidade<select value={manualUnit} onChange={e=>setManualUnit(e.target.value)}><option value="un">Unidade (un)</option><option value="m">Metro (m)</option><option value="m²">Metro quadrado (m²)</option><option value="h">Hora (h)</option><option value="kg">Quilograma (kg)</option></select></label><label>Quantidade<input type="number" min="0.01" step="any" value={manualQty} onChange={e=>setManualQty(e.target.value)}/></label></div><label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={manualPrice} onChange={e=>setManualPrice(e.target.value)}/></label><button className="primary" type="button" disabled={!manualDescription.trim()||!(Number(manualQty)>0)||!(Number(manualPrice)>=0)} onClick={addManualBudgetItem}><Plus size={16}/> Adicionar item</button></div>
 <p className="hint">Quantidades de cabos são estimativas iniciais, editáveis. Em iluminação, o PE não é incluído automaticamente na lista; verifique sua necessidade conforme a instalação e a NBR 5410. Não inclui automaticamente perdas, reserva técnica ou mão de obra. Os itens são armazenados localmente por cliente neste navegador; não estão sincronizados entre dispositivos.</p></section>}
-{!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.19 · Dados de demonstração identificados</footer></div></div>}
+{!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
+</main><footer>EletriPro · Interface v0.7.20 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
