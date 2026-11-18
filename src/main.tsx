@@ -8,35 +8,63 @@ const statesBR=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG'
 const formatMobile=(v:string)=>{const d=v.replace(/\D/g,'').slice(0,11);return d.length>7?`(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`:d.length>2?`(${d.slice(0,2)}) ${d.slice(2)}`:d;};
 const colors=['#a3a3a3','#eab308','#3b82f6','#22c55e','#a855f7'];
 
+
+// Tabelas preliminares de engenharia, NÃO homologadas como transcrição da NBR 5410.
+// Cobertura intencionalmente restrita: cobre/PVC, método B1, 2 ou 3 carregados.
+// Em produção, substituir por base normativa licenciada, versionada e revisada.
+const preliminaryB1:Record<string,Record<string,number>>={
+ '2':{'1.5':17.5,'2.5':24,'4':32,'6':41,'10':57,'16':76,'25':101,'35':125,'50':151},
+ '3':{'1.5':15.5,'2.5':21,'4':28,'6':36,'10':50,'16':68,'25':89,'35':110,'50':134}
+};
+// Coeficientes provisórios para PVC 70 °C, ambiente em ar, temperatura de referência 30 °C.
+const preliminaryTemperature:Record<string,number>={'10':1.22,'15':1.17,'20':1.12,'25':1.06,'30':1,'35':0.94,'40':0.87,'45':0.79,'50':0.71,'55':0.61,'60':0.50};
+// Exemplo preliminar para circuitos agrupados em feixe; não aplicar a outras disposições.
+const preliminaryGrouping:Record<string,number>={'1':1,'2':0.8,'3':0.7,'4':0.65,'5':0.6,'6':0.57};
+
 function CircuitSizing(){
- const [installation,setInstallation]=useState('residential'),[circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[voltage,setVoltage]=useState(''),[phases,setPhases]=useState('single'),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[section,setSection]=useState(''),[material,setMaterial]=useState('copper');
- const [method,setMethod]=useState('B1'),[insulation,setInsulation]=useState('PVC 70 °C'),[loaded,setLoaded]=useState('2'),[temperature,setTemperature]=useState(''),[groupCount,setGroupCount]=useState('1'),[baseIz,setBaseIz]=useState(''),[tempFactor,setTempFactor]=useState(''),[groupFactor,setGroupFactor]=useState('');
+ const [installation,setInstallation]=useState('residential'),[circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[voltage,setVoltage]=useState(''),[phases,setPhases]=useState('single'),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[material,setMaterial]=useState('copper');
+ const [method,setMethod]=useState('B1'),[insulation,setInsulation]=useState('PVC 70 °C'),[loaded,setLoaded]=useState('2'),[temperature,setTemperature]=useState(''),[groupCount,setGroupCount]=useState('1');
  const num=(x:string)=>x.trim()===''?NaN:Number(x.replace(',','.'));
- const p=num(power),v=num(voltage),f=num(pf),l=num(length),s=num(section),base=num(baseIz),ft=num(tempFactor),fg=num(groupFactor);
+ const p=num(power),v=num(voltage),f=num(pf),l=num(length);
+ const ft=preliminaryTemperature[temperature];
+ const fg=preliminaryGrouping[groupCount];
  const valid=Number.isFinite(p)&&p>0&&Number.isFinite(v)&&v>0&&Number.isFinite(f)&&f>0&&f<=1;
  const current=valid?p/(v*f*(phases==='three'?Math.sqrt(3):1)):null;
- const dropValid=current!==null&&Number.isFinite(l)&&l>=0&&Number.isFinite(s)&&s>0;
  const rho=material==='copper'?0.0175:0.0282;
- const drop=dropValid?(phases==='three'?Math.sqrt(3):2)*rho*l*current!*f/s:null;
+ const minSection=circuit==='lighting'?1.5:2.5;
+ const supported=material==='copper'&&insulation==='PVC 70 °C'&&method==='B1'&&
+   (loaded==='2'||loaded==='3')&&ft!==undefined&&fg!==undefined&&
+   circuit!=='motor'&&circuit!=='feeder'&&circuit!=='other'&&phases!=='three';
+ const candidates=supported&&current!==null
+   ?Object.entries(preliminaryB1[loaded]||{})
+      .map(([size,iz0])=>({size:Number(size),iz0,iz:iz0*ft!*fg!}))
+      .sort((a,b)=>a.size-b.size)
+      .filter(x=>x.size>=minSection&&x.iz>=current)
+   :[];
+ // Pré-seleção experimental: não verifica queda admissível, proteção ou curto-circuito.
+ const candidate=candidates[0]||null;
+ const selectedSection=candidate?.size??null;
+ const base=candidate?.iz0??null;
+ const corrected=candidate?.iz??null;
+ const drop=current!==null&&selectedSection!==null&&Number.isFinite(l)&&l>=0
+   ?2*rho*l*current*f/selectedSection:null;
  const pct=drop!==null?drop/v*100:null;
- const capacityValid=current!==null&&Number.isFinite(base)&&base>0&&Number.isFinite(ft)&&ft>0&&ft<=1&&Number.isFinite(fg)&&fg>0&&fg<=1;
- const corrected=capacityValid?base*ft*fg:null;
  const fmt=(n:number,d=2)=>n.toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
- const reset=()=>{setPower('');setVoltage('');setPf('1');setLength('');setSection('');setBaseIz('');setTempFactor('');setGroupFactor('');setTemperature('');setGroupCount('1')};
- return <div className="sizing-layout"><section className="panel sizing-form"><div className="panel-heading"><h2>Dimensionamento de condutores · v0.7</h2><button type="button" className="outline" onClick={reset}>Limpar</button></div><p>Estudo preliminar para instalações de baixa tensão. Preencha os dados e informe valores de capacidade e fatores obtidos em tabelas técnicas verificadas.</p>
+ const reset=()=>{setPower('');setVoltage('');setPf('1');setLength('');setTemperature('');setGroupCount('1')};
+ return <div className="sizing-layout"><section className="panel sizing-form"><div className="panel-heading"><h2>Dimensionamento de condutores · v0.7.2</h2><button type="button" className="outline" onClick={reset}>Limpar</button></div><p>Estudo preliminar para instalações de baixa tensão. Informe os dados do circuito. A seção é pré-selecionada automaticamente apenas nas condições contempladas pela base experimental.</p>
  <div className="two"><label>Tipo de instalação<select value={installation} onChange={e=>setInstallation(e.target.value)}><option value="residential">Residencial</option><option value="commercial">Comercial</option><option value="industrial">Industrial</option></select></label><label>Tipo de circuito<select value={circuit} onChange={e=>setCircuit(e.target.value)}><option value="lighting">Iluminação</option><option value="tug">Tomadas de uso geral</option><option value="tue">Circuito dedicado / TUE</option><option value="motor">Motor / máquina</option><option value="feeder">Alimentador</option><option value="other">Outro</option></select></label></div>
  <h3>1. Dados elétricos</h3><div className="two"><label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label><label>Tensão (V)<input type="number" min="0" step="any" value={voltage} onChange={e=>setVoltage(e.target.value)} placeholder="Ex.: 220"/></label></div>
  <div className="two"><label>Sistema<select value={phases} onChange={e=>setPhases(e.target.value)}><option value="single">Circuito de dois condutores ativos</option><option value="three">Trifásico equilibrado</option></select></label><label>Fator de potência<input type="number" min="0.01" max="1" step="0.01" value={pf} onChange={e=>setPf(e.target.value)}/></label></div>
- <div className="two"><label>Comprimento de ida (m)<input type="number" min="0" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 15"/></label><label>Seção em estudo (mm²)<input type="number" min="0" step="any" value={section} onChange={e=>setSection(e.target.value)} placeholder="Ex.: 6"/></label></div>
+ <label>Comprimento de ida (m)<input type="number" min="0" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 15"/></label>
  <h3>2. Instalação e condutor</h3><div className="two"><label>Método de referência<select value={method} onChange={e=>setMethod(e.target.value)}>{['A1','A2','B1','B2','C','D','E','F','G'].map(x=><option key={x}>{x}</option>)}</select></label><label>Material<select value={material} onChange={e=>setMaterial(e.target.value)}><option value="copper">Cobre</option><option value="aluminum">Alumínio</option></select></label></div>
  <div className="two"><label>Isolação<select value={insulation} onChange={e=>setInsulation(e.target.value)}><option>PVC 70 °C</option><option>EPR / XLPE 90 °C</option><option>Outra — verificar tabela</option></select></label><label>Condutores carregados<select value={loaded} onChange={e=>setLoaded(e.target.value)}><option value="2">2</option><option value="3">3</option><option value="other">Outra condição</option></select></label></div>
- <div className="two"><label>Temperatura ambiente (°C)<input type="number" step="any" value={temperature} onChange={e=>setTemperature(e.target.value)} placeholder="Informativa"/></label><label>Circuitos agrupados<input type="number" min="1" step="1" value={groupCount} onChange={e=>setGroupCount(e.target.value)}/></label></div>
- <h3>3. Capacidade e correções</h3><p className="hint">Informe a capacidade de referência e os fatores correspondentes à condição real de instalação. Não são preenchidos automaticamente: dependem da tabela e das condições verificadas.</p>
- <div className="two"><label>Capacidade tabelada Iz₀ (A)<input type="number" min="0" step="any" value={baseIz} onChange={e=>setBaseIz(e.target.value)} placeholder="Da tabela aplicável"/></label><label>Fator de temperatura Ft<input type="number" min="0" max="1" step="any" value={tempFactor} onChange={e=>setTempFactor(e.target.value)} placeholder="Ex.: 0,87"/></label></div><label>Fator de agrupamento Fg<input type="number" min="0" max="1" step="any" value={groupFactor} onChange={e=>setGroupFactor(e.target.value)} placeholder="Ex.: 0,80"/></label>
- <p className="hint">Para motores, cargas não lineares, condições especiais, neutro carregado, solos e outros métodos, é necessária avaliação adicional. Nenhum valor normativo é presumido pelo sistema.</p></section>
- <section className="panel sizing-results"><h2>Resultados e verificações</h2><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Capacidade corrigida (Iz = Iz₀ × Ft × Fg)</span><strong>{corrected===null?'Pendente':`${fmt(corrected)} A`}</strong>{corrected!==null&&current!==null&&<small>{corrected>=current?'Iz ≥ Ib — condição de corrente preliminar atendida':'Iz < Ib — seção/condição insuficiente'}</small>}</div><div className="sizing-metric"><span>Queda de tensão resistiva estimada (20 °C)</span><strong>{drop===null?'Pendente':`${fmt(drop)} V`}</strong>{pct!==null&&<small>{fmt(pct)}% da tensão informada</small>}</div>
+ <div className="two"><label>Temperatura ambiente (°C)<select value={temperature} onChange={e=>setTemperature(e.target.value)}><option value="">Selecione</option>{Object.keys(preliminaryTemperature).map(t=><option key={t} value={t}>{t} °C</option>)}</select></label><label>Circuitos agrupados<select value={groupCount} onChange={e=>setGroupCount(e.target.value)}>{Object.keys(preliminaryGrouping).map(n=><option key={n} value={n}>{n}</option>)}</select></label></div>
+ <p className="hint">Cálculos internos: referência provisória para cobre/PVC, B1, 2 ou 3 condutores carregados, temperatura em ar e circuitos em feixe (1 a 6). Outras condições ficam pendentes. As tabelas ainda requerem revisão normativa e não autorizam especificação de cabos.</p></section>
+ <section className="panel sizing-results"><h2>Resultados e verificações</h2><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção pré-selecionada (não validada)</span><strong>{selectedSection===null?'Pendente de validação':`${String(selectedSection).replace('.',',')} mm²`}</strong><small>Referência experimental; não especificar em projeto sem verificações normativas.</small></div><div className="sizing-metric"><span>Capacidade corrigida preliminar (Iz)</span><strong>{corrected===null?'Pendente de base técnica':`${fmt(corrected)} A`}</strong>{corrected!==null&&current!==null&&<small>{corrected>=current?'Iz ≥ Ib no modelo preliminar (não validado)':'Iz < Ib no modelo preliminar — revisar circuito'}</small>}</div><div className="sizing-metric"><span>Queda de tensão resistiva estimada (20 °C)</span><strong>{drop===null?'Pendente':`${fmt(drop)} V`}</strong>{pct!==null&&<small>{fmt(pct)}% da tensão informada</small>}</div>
+ {current!==null&&corrected===null&&<div className="sizing-warning"><strong>Condição não contemplada</strong><p>O sistema não atribui valores de capacidade ou correção sem referência disponível. Selecione uma condição suportada ou aguarde a inclusão de tabelas revisadas.</p></div>}
+ {corrected!==null&&<p className="hint">Memória de cálculo (somente leitura): Iz₀ = {fmt(base!)} A · Ft = {fmt(ft!)} · Fg = {fmt(fg!)}. Valores provisórios, sujeitos a validação normativa.</p>}
  <div className="sizing-formula"><strong>Equações utilizadas</strong><p>{phases==='three'?'Ib = P / (√3 × V × fp)':'Ib = P / (V × fp)'}</p><p>Iz = Iz₀ × Ft × Fg</p><p>{phases==='three'?'ΔV ≈ √3 × ρ × L × Ib × fp / S':'ΔV ≈ 2 × ρ × L × Ib × fp / S'}</p><small>ρ = {String(rho).replace('.',',')} Ω·mm²/m, aproximação a 20 °C</small></div>
- <div className="sizing-warning"><strong>Verificação técnica incompleta</strong><p>O cálculo não seleciona automaticamente cabos ou disjuntores, nem comprova conformidade com a NBR 5410. Verifique seção mínima, método real, fatores tabelados, queda de tensão admissível, aquecimento, proteção contra sobrecarga e curto-circuito, impedância de falta e demais condições aplicáveis.</p></div><span className="plan-chip">v0.7 · estudo preliminar, sem emissão de projeto</span></section></div>
+ <div className="sizing-warning"><strong>Verificação técnica incompleta</strong><p>Os valores de capacidade e fatores são referências preliminares não validadas contra a edição aplicável da NBR 5410. A pré-seleção automática é experimental e NÃO constitui recomendação de cabo ou disjuntor, nem comprova conformidade normativa. Verifique seção mínima, método real, fatores tabelados, queda de tensão admissível, aquecimento, proteção contra sobrecarga e curto-circuito, impedância de falta e demais condições aplicáveis.</p></div><span className="plan-chip">v0.7.2 · pré-seleção experimental, sem emissão de projeto</span></section></div>
 }
 
 function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState('Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false);
@@ -73,5 +101,5 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Assinatura'&&<section className="panel subscription"><Crown size={32}/><h2>EletriPro Pro</h2><p>Assinatura anual com clientes ilimitados e recursos profissionais.</p><strong>Valor a definir</strong><button className="primary" disabled>Pagamento Pix em preparação</button><small>O acesso Pro só será ativado após confirmação segura do pagamento pelo Mercado Pago.</small></section>}
 {tab==='Dimensionamento'&&<CircuitSizing/>}
 {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Dimensionamento'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.2 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
