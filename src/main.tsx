@@ -148,6 +148,7 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
 }
 type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
 function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings;clientId:string;userId:string}){
+ const [environmentId,setEnvironmentId]=useState(''),[environmentOptions,setEnvironmentOptions]=useState<SavedEnvironment[]>([]),[materialSending,setMaterialSending]=useState(false);
  const [circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[material,setMaterial]=useState('copper');
  const [wiring,setWiring]=useState('phase-neutral');
  const [insulation,setInsulation]=useState('PVC 70 °C'),[groupCount,setGroupCount]=useState('1');
@@ -173,6 +174,10 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
       if(request!==circuitRequest.current)return;
       if(pe){setCircuitStatus('Erro ao localizar projeto: '+pe.message);setCircuitLoading(false);return}
       if(!project){setCircuitStatus('Salve primeiro o Tipo de instalação para criar o projeto.');setCircuitLoading(false);return}
+      const rooms=await supabase.from('eletripro_environments').select('id,title,data').eq('project_id',project.id).order('created_at',{ascending:true});
+      if(request!==circuitRequest.current)return;
+      if(rooms.error)setCircuitStatus('Erro ao carregar ambientes: '+rooms.error.message);
+      else setEnvironmentOptions((rooms.data||[]) as SavedEnvironment[]);
       const {data,error}=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',project.id).order('created_at',{ascending:true});
       if(request!==circuitRequest.current)return;
       if(error)setCircuitStatus('Erro ao carregar circuitos: '+error.message);
@@ -219,6 +224,18 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     }catch(e){setCircuitStatus('Erro ao enviar materiais: '+(e instanceof Error?e.message:String(e)));}
     finally{setMaterialSending(false)}
   }
+ async function sendSizingMaterials(items:BudgetItem[]){
+   if(!supabase||materialSending)return;
+   if(!window.confirm(`Salvar ${items.length} itens do dimensionamento diretamente em Materiais? Confira duplicidades e quantidades depois.`))return;
+   setMaterialSending(true);setCircuitStatus('Salvando materiais...');
+   try{
+     const projectId=await ensureEletriProject(clientId,userId);
+     const r=await supabase.from('eletripro_materials').insert(items.map(x=>({project_id:projectId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unitPrice})));
+     if(r.error)throw r.error;
+     setCircuitStatus(`${items.length} itens adicionados a Materiais no Supabase. Revise os preços e quantidades na aba Materiais.`);
+   }catch(e){setCircuitStatus('Erro ao salvar materiais: '+(e instanceof Error?e.message:String(e)))}
+   finally{setMaterialSending(false)}
+ }
  const {method,temperature,groupMode}=settings;
  const phases=settings.supply==='three'?'three':'single';
  const loaded=settings.supply==='three'?'3':'2';
@@ -295,6 +312,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const reset=()=>{setPower('');setPf('1');setLength('');setGroupCount('1')};
  return <><section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><h2>Circuitos do projeto</h2><p>Cadastre vários circuitos e recupere seus dados em qualquer dispositivo.</p></div><button type="button" className="outline" disabled={circuitBusy} onClick={clearCircuit}><Plus size={16}/> Novo circuito</button></div>
   {circuitLoading?<p className="hint">Carregando circuitos...</p>:savedCircuits.length===0?<p className="hint">Nenhum circuito salvo neste projeto.</p>:<div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:12}}>{savedCircuits.map(x=><button type="button" key={x.id} className={selectedCircuitId===x.id?'primary':'outline'} onClick={()=>selectSavedCircuit(x)}>{x.title}</button>)}</div>}
+   <label>Ambiente associado (opcional)<select value={environmentId} onChange={e=>setEnvironmentId(e.target.value)}><option value="">Sem ambiente associado</option>{environmentOptions.map(x=><option key={x.id} value={x.id}>{x.title}</option>)}</select></label>
   <label>Nome do circuito<input value={circuitTitle} onChange={e=>setCircuitTitle(e.target.value)} placeholder="Ex.: C1 - Iluminação da sala"/></label>
   <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button type="button" className="primary" disabled={circuitBusy||circuitLoading||!circuitTitle.trim()} onClick={()=>void saveCircuit()}>{circuitBusy?'Aguarde...':selectedCircuitId?'Atualizar circuito':'Salvar circuito'}</button>{selectedCircuitId&&<button type="button" className="outline" disabled={circuitBusy} onClick={()=>void deleteCircuit()}>Excluir circuito</button>}</div>
   {circuitStatus&&<p className="hint" role="status">{circuitStatus}</p>}
@@ -656,5 +674,5 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Materiais'&&activeClient&&<MaterialsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {tab==='Orçamentos'&&activeClient&&<BudgetsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.23 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.23.1 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
