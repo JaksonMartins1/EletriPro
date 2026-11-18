@@ -147,7 +147,7 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
  </div>;
 }
 type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
-function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(items:BudgetItem[])=>void;settings:InstallationSettings;clientId:string;userId:string}){
+function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings;clientId:string;userId:string}){
  const [circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[material,setMaterial]=useState('copper');
  const [wiring,setWiring]=useState('phase-neutral');
  const [insulation,setInsulation]=useState('PVC 70 °C'),[groupCount,setGroupCount]=useState('1');
@@ -158,11 +158,11 @@ function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(
   const [circuitBusy,setCircuitBusy]=useState(false);
   const [circuitLoading,setCircuitLoading]=useState(true);
   const circuitRequest=React.useRef(0);
-  const clearCircuit=()=>{setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf('1');setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount('1');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
+  const clearCircuit=()=>{setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf('1');setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount('1');setEnvironmentId('');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
   const selectSavedCircuit=(row:SavedCircuit)=>{
     const d=row.data||{};
     const val=(key:string,fallback:string)=>typeof d[key]==='string'?String(d[key]):fallback;
-    setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(val('pf','1'));setLength(val('length',''));setMaterial(val('material','copper'));setWiring(val('wiring','phase-neutral'));setInsulation(val('insulation','PVC 70 °C'));setGroupCount(val('groupCount','1'));setCircuitStatus('Circuito carregado.');
+    setEnvironmentId(val('environmentId',''));setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(val('pf','1'));setLength(val('length',''));setMaterial(val('material','copper'));setWiring(val('wiring','phase-neutral'));setInsulation(val('insulation','PVC 70 °C'));setGroupCount(val('groupCount','1'));setCircuitStatus('Circuito carregado.');
   };
   useEffect(()=>{
     const request=++circuitRequest.current;
@@ -189,7 +189,7 @@ function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(
     setCircuitBusy(true);setCircuitStatus('');
     const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
     if(pe||!project){setCircuitStatus(pe?'Erro: '+pe.message:'Salve primeiro o Tipo de instalação.');setCircuitBusy(false);return}
-    const data={circuit,power,pf,length,material,wiring,insulation,groupCount,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
+    const data={environmentId:environmentId||null,circuit,power,pf,length,material,wiring,insulation,groupCount,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
     const result=selectedCircuitId
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
@@ -207,6 +207,18 @@ function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(
     setCircuitBusy(false);
   }
 
+  async function sendSizingMaterials(items:BudgetItem[]){
+    if(!supabase||materialSending)return;
+    if(!window.confirm(`Salvar ${items.length} itens do dimensionamento diretamente em Materiais? Revise duplicidades e quantidades depois.`))return;
+    setMaterialSending(true);setCircuitStatus('Salvando materiais no Supabase...');
+    try{
+      const projectId=await ensureEletriProject(clientId,userId);
+      const result=await supabase.from('eletripro_materials').insert(items.map(x=>({project_id:projectId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unitPrice})));
+      if(result.error)throw result.error;
+      setCircuitStatus(`${items.length} itens adicionados a Materiais no Supabase. Abra a aba Materiais para revisar quantidades e preços.`);
+    }catch(e){setCircuitStatus('Erro ao enviar materiais: '+(e instanceof Error?e.message:String(e)));}
+    finally{setMaterialSending(false)}
+  }
  const {method,temperature,groupMode}=settings;
  const phases=settings.supply==='three'?'three':'single';
  const loaded=settings.supply==='three'?'3':'2';
@@ -301,7 +313,7 @@ function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(
  {noCompliantCandidate&&<div className="sizing-warning"><strong>Nenhuma seção aprovada no modelo experimental</strong><p>Não foi encontrada seção que atenda simultaneamente à corrente e ao limite provisório de 4% dentro da base provisória. Não use esse resultado para especificação.</p></div>}
  {current!==null&&!supported&&<div className="sizing-warning"><strong>Condição não contemplada</strong><p>Esta condição não está coberta pelas tabelas e hipóteses implementadas. Não é possível pré-selecionar a seção automaticamente.</p></div>}
  {noBreakerSolution&&<div className="sizing-warning"><strong>Sem combinação preliminar de cabo e disjuntor</strong><p>Há seção que atende à corrente e à queda estimada, mas nenhuma das seções disponíveis permite um disjuntor da lista com Ib ≤ In ≤ Iz. Não selecione um disjuntor acima da capacidade corrigida do condutor.</p></div>}
- {candidate!==null&&breakerCandidate!==null&&Number.isFinite(l)&&l>0&&<div className="sizing-formula"><strong>Enviar materiais ao orçamento</strong><p className="hint">Cabos separados por função e cor, com metragem inicial igual ao comprimento de ida para cada condutor. Ajuste cada quantidade no orçamento. Em iluminação, o retorno é estimado com o mesmo comprimento; confirme o percurso real. A seção do PE é preliminar. Não inclui perdas nem reserva técnica.</p><button type="button" className="primary" onClick={()=>onAddToBudget(budgetCableItems({length:l,size:candidate.size,material,insulation,circuit,wiring:effectiveWiring,breaker:breakerCandidate,curve:tripCurve||'a confirmar',poles:effectiveWiring==='phase-neutral'?1:effectiveWiring==='phase-phase'?2:3}))}>Adicionar cabos e disjuntor ao orçamento</button></div>}
+ {candidate!==null&&breakerCandidate!==null&&Number.isFinite(l)&&l>0&&<div className="sizing-formula"><strong>Enviar materiais ao cadastro do projeto</strong><p className="hint">Cabos separados por função e cor, com metragem inicial igual ao comprimento de ida para cada condutor. Ajuste cada quantidade e preço em Materiais. Em iluminação, o retorno é estimado com o mesmo comprimento; confirme o percurso real. A seção do PE é preliminar. Não inclui perdas nem reserva técnica.</p><button type="button" className="primary" disabled={materialSending} onClick={()=>void sendSizingMaterials(budgetCableItems({length:l,size:candidate.size,material,insulation,circuit,wiring:effectiveWiring,breaker:breakerCandidate,curve:tripCurve||'a confirmar',poles:effectiveWiring==='phase-neutral'?1:effectiveWiring==='phase-phase'?2:3}))}>{materialSending?'Salvando...':'Adicionar cabos e disjuntor a Materiais'}</button></div>}
  {candidate!==null&&current!==null&&<details className="sizing-formula"><summary>Ver memória de seleção automática</summary>
  <p>1. Corrente de projeto: Ib = {fmt(current)} A. Seção mínima considerada: {String(minSection).replace('.',',')} mm².</p>
  <p>2. Capacidade corrigida: Iz = Iz₀ × Ft × Fg, com Ft = {fmt(ft!)} e Fg = {fmt(fg!)}.</p>
@@ -395,8 +407,8 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
 
 // v0.7.22 — Orçamentos por projeto no Supabase. Rascunho local preservado até importação explícita.
 type CloudBudget={id:string;title:string;status:string};
-type CloudBudgetItem={id:string;description:string;quantity:number;unit:string;unit_price:number};
-type BudgetEditItem=BudgetItem & {cloudId?:string};
+type CloudBudgetItem={id:string;description:string;quantity:number;unit:string;unit_price:number;item_type:'material'|'labor'};
+type BudgetEditItem=BudgetItem & {cloudId?:string;itemType:'material'|'labor'};
 function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:string;localBudget:BudgetItem[]}){
  const [projectId,setProjectId]=useState('');
  const [budgets,setBudgets]=useState<CloudBudget[]>([]);
@@ -405,7 +417,7 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  const [items,setItems]=useState<BudgetEditItem[]>([]);
  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[dirty,setDirty]=useState(false);
  const [status,setStatus]=useState('');
- const [materials,setMaterials]=useState<MaterialRow[]>([]);
+ const [materials,setMaterials]=useState<MaterialRow[]>([]),[selectedMaterials,setSelectedMaterials]=useState<string[]>([]),[manualType,setManualType]=useState<'material'|'labor'>('material');
  const [manualDescription,setManualDescription]=useState(''),[manualUnit,setManualUnit]=useState('un'),[manualQty,setManualQty]=useState('1'),[manualPrice,setManualPrice]=useState('0');
  const request=React.useRef(0);
  const selectedRef=React.useRef<string|null>(null);
@@ -417,10 +429,10 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  const setRowsDirty=(fn:(old:BudgetEditItem[])=>BudgetEditItem[])=>{setItems(fn);updateDirty(true)};
  const loadItems=async(id:string,req:number)=>{
   if(!supabase)return;
-  const result=await supabase.from('eletripro_budget_items').select('id,description,quantity,unit,unit_price').eq('budget_id',id).order('created_at',{ascending:true});
+  const result=await supabase.from('eletripro_budget_items').select('id,description,quantity,unit,unit_price,item_type').eq('budget_id',id).order('created_at',{ascending:true});
   if(req!==request.current)return;
   if(result.error){setStatus('Erro ao carregar itens: '+result.error.message);return}
-  setItems(((result.data||[]) as CloudBudgetItem[]).map(x=>({id:x.id,cloudId:x.id,description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price)})));
+  setItems(((result.data||[]) as CloudBudgetItem[]).map(x=>({id:x.id,cloudId:x.id,description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price),itemType:x.item_type||'material'})));
   updateDirty(false);
  };
  useEffect(()=>{
@@ -472,10 +484,10 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
    // Atualizar/adicionar antes de excluir; se houver falha, os itens anteriores permanecem.
    const persisted:BudgetEditItem[]=[];
    for(const item of items){
-    const payload={description:item.description.trim(),quantity:item.quantity,unit:item.unit,unit_price:item.unitPrice};
+    const payload={description:item.description.trim(),quantity:item.quantity,unit:item.unit,unit_price:item.unitPrice,item_type:item.itemType};
     const r=item.cloudId
      ?await supabase.from('eletripro_budget_items').update(payload).eq('id',item.cloudId).eq('budget_id',budgetId).select('id').single()
-     :await supabase.from('eletripro_budget_items').upsert({id:/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(item.id)?item.id:uuid(),budget_id:budgetId,...payload},{onConflict:'id'}).select('id').single();
+     :await supabase.from('eletripro_budget_items').insert({budget_id:budgetId,...payload}).select('id').single();
     if(r.error)throw r.error;
     persisted.push({...item,id:r.data.id,cloudId:r.data.id});
    }
@@ -504,20 +516,24 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  function importLocal(){
   if(!localBudget.length)return;
   if(!window.confirm(`Adicionar ${localBudget.length} itens do rascunho local a este orçamento? Os itens locais serão preservados; importar novamente poderá duplicá-los.`))return;
-  setRowsDirty(old=>[...old,...localBudget.map(x=>({...x,id:uuid()}))]);setStatus('Itens locais adicionados. Clique em Salvar orçamento para sincronizar. O rascunho local não foi apagado.');
+  setRowsDirty(old=>[...old,...localBudget.map(x=>({...x,id:uuid(),itemType:'material' as const}))]);setStatus('Itens locais adicionados. Clique em Salvar orçamento para sincronizar. O rascunho local não foi apagado.');
  }
  function importMaterials(){
-  if(!materials.length)return;
-  if(!window.confirm(`Adicionar ${materials.length} materiais cadastrados a este orçamento? A operação pode criar duplicidades.`))return;
-  setRowsDirty(old=>[...old,...materials.map(x=>({id:uuid(),description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price)}))]);setStatus('Materiais adicionados. Clique em Salvar orçamento.');
+  if(!selectedMaterials.length)return;
+  const chosen=materials.filter(x=>selectedMaterials.includes(x.id));
+  if(!window.confirm(`Adicionar ${chosen.length} material(is) selecionado(s) a este orçamento? Itens repetidos poderão ser duplicados.`))return;
+  setRowsDirty(old=>[...old,...chosen.map(x=>({id:uuid(),description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price),itemType:'material' as const}))]);
+  setSelectedMaterials([]);setStatus('Materiais selecionados adicionados. Clique em Salvar orçamento.');
  }
  function addManual(){
   const q=Number(manualQty),price=Number(manualPrice);
   if(!manualDescription.trim()||!Number.isFinite(q)||q<=0||!Number.isFinite(price)||price<0)return;
-  setRowsDirty(old=>[...old,{id:uuid(),description:manualDescription.trim(),quantity:q,unit:manualUnit,unitPrice:price}]);
+  setRowsDirty(old=>[...old,{id:uuid(),description:manualDescription.trim(),quantity:q,unit:manualUnit,unitPrice:price,itemType:manualType}]);
   setManualDescription('');setManualQty('1');setManualPrice('0');
  }
- const total=items.reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
+ const materialTotal=items.filter(x=>x.itemType!=='labor').reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
+ const laborTotal=items.filter(x=>x.itemType==='labor').reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
+ const total=materialTotal+laborTotal;
  return <div style={{display:'grid',gap:16}}>
  <section className="panel"><div className="panel-heading"><div><h2>Orçamentos do projeto · Supabase</h2><p>Crie e edite vários orçamentos para este cliente. Os dados são sincronizados após clicar em Salvar orçamento.</p></div><button className="outline" type="button" disabled={busy||loading} onClick={newBudget}><Plus size={16}/> Novo orçamento</button></div>
  {loading?<p className="hint">Carregando...</p>:budgets.length===0?<p className="hint">Nenhum orçamento salvo neste projeto.</p>:<div style={{display:'flex',gap:8,flexWrap:'wrap'}}>{budgets.map(b=><button key={b.id} type="button" disabled={busy} className={selectedId===b.id?'primary':'outline'} onClick={()=>void selectBudget(b)}>{b.title}</button>)}</div>}
@@ -527,13 +543,18 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  <label>Nome do orçamento<input maxLength={160} value={title} disabled={busy||loading} onChange={e=>{setTitle(e.target.value);updateDirty(true)}} placeholder="Ex.: Instalação elétrica - residência"/></label>
  <div style={{display:'flex',gap:8,flexWrap:'wrap',margin:'12px 0'}}>
  <button type="button" className="outline" disabled={busy||loading||!localBudget.length} onClick={importLocal}>Importar rascunho local ({localBudget.length})</button>
- <button type="button" className="outline" disabled={busy||loading||!materials.length} onClick={importMaterials}>Adicionar materiais cadastrados ({materials.length})</button>
+ <button type="button" className="outline" disabled={busy||loading||!selectedMaterials.length} onClick={importMaterials}>Adicionar selecionados ({selectedMaterials.length})</button>
+ </div>
+ <div style={{maxHeight:190,overflowY:'auto',border:'1px solid #444',borderRadius:8,padding:10}}>
+ <strong>Selecionar materiais do projeto</strong>
+ {materials.length===0?<p className="hint">Nenhum material cadastrado.</p>:materials.map(x=><label key={x.id} style={{display:'flex',alignItems:'center',gap:8,marginTop:8}}><input type="checkbox" style={{width:18}} checked={selectedMaterials.includes(x.id)} disabled={busy||loading} onChange={e=>setSelectedMaterials(old=>e.target.checked?[...old,x.id]:old.filter(id=>id!==x.id))}/><span>{x.description} · {x.quantity} {x.unit} · {moneyBR(Number(x.unit_price))}/un.</span></label>)}
  </div>
  <p className="hint">As importações são opcionais e não apagam a origem. Revise os itens antes de salvar para evitar duplicidades.</p>
- <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:8}}>Descrição</th><th style={{textAlign:'left',padding:8,width:90}}>Quantidade</th><th style={{textAlign:'left',padding:8,width:75}}>Un.</th><th style={{textAlign:'left',padding:8,width:125}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:8,width:120}}>Subtotal</th><th style={{width:48}}/></tr></thead><tbody>{items.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:8}}><input aria-label="Descrição" style={{minWidth:180}} disabled={busy||loading} value={x.description} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,description:e.target.value}:y))}/></td><td style={{padding:8}}><input aria-label={'Quantidade '+x.description} style={{minWidth:65}} type="number" min="0" step="0.001" disabled={busy||loading} value={x.quantity} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Number(e.target.value)}:y))}/></td><td style={{padding:8}}><input aria-label={'Unidade '+x.description} style={{minWidth:55}} disabled={busy||loading} value={x.unit} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unit:e.target.value}:y))}/></td><td style={{padding:8}}><input aria-label={'Preço '+x.description} style={{minWidth:95}} type="number" min="0" step="0.01" disabled={busy||loading} value={x.unitPrice} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Number(e.target.value)}:y))}/></td><td style={{textAlign:'right',whiteSpace:'nowrap',padding:8}}>{moneyBR(x.quantity*x.unitPrice)}</td><td><button type="button" className="outline" disabled={busy||loading} title="Remover item" onClick={()=>setRowsDirty(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
+ <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:8}}>Descrição</th><th style={{textAlign:'left',padding:8}}>Tipo</th><th style={{textAlign:'left',padding:8,width:90}}>Quantidade</th><th style={{textAlign:'left',padding:8,width:75}}>Un.</th><th style={{textAlign:'left',padding:8,width:125}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:8,width:120}}>Subtotal</th><th style={{width:48}}/></tr></thead><tbody>{items.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:8}}><input aria-label="Descrição" style={{minWidth:180}} disabled={busy||loading} value={x.description} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,description:e.target.value}:y))}/></td><td style={{padding:8}}><select aria-label={'Tipo '+x.description} disabled={busy||loading} value={x.itemType} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,itemType:e.target.value as 'material'|'labor'}:y))}><option value="material">Material</option><option value="labor">Mão de obra</option></select></td><td style={{padding:8}}><input aria-label={'Quantidade '+x.description} style={{minWidth:65}} type="number" min="0" step="0.001" disabled={busy||loading} value={x.quantity} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Number(e.target.value)}:y))}/></td><td style={{padding:8}}><input aria-label={'Unidade '+x.description} style={{minWidth:55}} disabled={busy||loading} value={x.unit} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unit:e.target.value}:y))}/></td><td style={{padding:8}}><input aria-label={'Preço '+x.description} style={{minWidth:95}} type="number" min="0" step="0.01" disabled={busy||loading} value={x.unitPrice} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Number(e.target.value)}:y))}/></td><td style={{textAlign:'right',whiteSpace:'nowrap',padding:8}}>{moneyBR(x.quantity*x.unitPrice)}</td><td><button type="button" className="outline" disabled={busy||loading} title="Remover item" onClick={()=>setRowsDirty(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
  {items.length===0&&<p className="hint">Nenhum item incluído. Importe materiais ou adicione um item manualmente.</p>}
+ <div style={{marginTop:18}}><p><strong>Materiais:</strong> {moneyBR(materialTotal)}</p><p><strong>Mão de obra:</strong> {moneyBR(laborTotal)}</p></div>
  <div style={{display:'flex',justifyContent:'space-between',gap:12,margin:'18px 0',flexWrap:'wrap'}}><strong>Total do orçamento</strong><strong style={{fontSize:22}}>{moneyBR(total)}</strong></div>
- <div className="sizing-metric" style={{padding:16}}><h3>Adicionar item manualmente</h3>
+ <div className="sizing-metric" style={{padding:16}}><h3>Adicionar item manualmente</h3><label>Categoria<select value={manualType} onChange={e=>setManualType(e.target.value as 'material'|'labor')}><option value="material">Material</option><option value="labor">Mão de obra / serviço</option></select></label>
  <label>Descrição<input value={manualDescription} disabled={busy||loading} onChange={e=>setManualDescription(e.target.value)}/></label>
  <div className="two"><label>Unidade<select value={manualUnit} disabled={busy||loading} onChange={e=>setManualUnit(e.target.value)}><option value="un">un</option><option value="m">m</option><option value="m²">m²</option><option value="h">h</option><option value="kg">kg</option></select></label><label>Quantidade<input type="number" min="0.001" step="0.001" value={manualQty} disabled={busy||loading} onChange={e=>setManualQty(e.target.value)}/></label></div>
  <label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={manualPrice} disabled={busy||loading} onChange={e=>setManualPrice(e.target.value)}/></label>
@@ -630,10 +651,10 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Assinatura'&&<section className="panel subscription"><Crown size={32}/><h2>EletriPro Pro</h2><p>Assinatura anual com clientes ilimitados e recursos profissionais.</p><strong>Valor a definir</strong><button className="primary" disabled>Pagamento Pix em preparação</button><small>O acesso Pro só será ativado após confirmação segura do pagamento pelo Mercado Pago.</small></section>}
 {clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div><p className="hint">Tipo de instalação pode ser salvo no Supabase. Orçamentos salvos são sincronizados no Supabase; o rascunho local é preservado até importação manual.</p></section>}
 {tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation}/><section className="panel" style={{marginTop:12}}><button type="button" className="primary" disabled={installationLoading||installationSaving} onClick={saveInstallation}>{installationLoading?'Carregando projeto...':installationSaving?'Salvando...':'Salvar tipo de instalação'}</button>{installationStatus&&<p className="hint" role="status">{installationStatus}</p>}</section></>}
-{tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} onAddToBudget={addSizingToBudget} settings={installationSettings}/>}
+{tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
 {tab==='Materiais'&&activeClient&&<MaterialsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {tab==='Orçamentos'&&activeClient&&<BudgetsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.22 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.23 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
