@@ -59,10 +59,67 @@ const budgetCableItems=(params:{length:number;size:number;material:string;insula
  return items;
 };
 const moneyBR=(n:number)=>n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
-function CircuitSizing({onAddToBudget,settings}:{onAddToBudget:(items:BudgetItem[])=>void;settings:InstallationSettings}){
+type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
+function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(items:BudgetItem[])=>void;settings:InstallationSettings;clientId:string;userId:string}){
  const [circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[material,setMaterial]=useState('copper');
  const [wiring,setWiring]=useState('phase-neutral');
  const [insulation,setInsulation]=useState('PVC 70 °C'),[groupCount,setGroupCount]=useState('1');
+  const [savedCircuits,setSavedCircuits]=useState<SavedCircuit[]>([]);
+  const [selectedCircuitId,setSelectedCircuitId]=useState<string|null>(null);
+  const [circuitTitle,setCircuitTitle]=useState('');
+  const [circuitStatus,setCircuitStatus]=useState('');
+  const [circuitBusy,setCircuitBusy]=useState(false);
+  const [circuitLoading,setCircuitLoading]=useState(true);
+  const circuitRequest=React.useRef(0);
+  const clearCircuit=()=>{setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf('1');setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount('1');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
+  const selectSavedCircuit=(row:SavedCircuit)=>{
+    const d=row.data||{};
+    const val=(key:string,fallback:string)=>typeof d[key]==='string'?String(d[key]):fallback;
+    setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(val('pf','1'));setLength(val('length',''));setMaterial(val('material','copper'));setWiring(val('wiring','phase-neutral'));setInsulation(val('insulation','PVC 70 °C'));setGroupCount(val('groupCount','1'));setCircuitStatus('Circuito carregado.');
+  };
+  useEffect(()=>{
+    const request=++circuitRequest.current;
+    setCircuitLoading(true);setSavedCircuits([]);setSelectedCircuitId(null);setCircuitStatus('');
+    void (async()=>{
+      if(!supabase)return;
+      const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
+      if(request!==circuitRequest.current)return;
+      if(pe){setCircuitStatus('Erro ao localizar projeto: '+pe.message);setCircuitLoading(false);return}
+      if(!project){setCircuitStatus('Salve primeiro o Tipo de instalação para criar o projeto.');setCircuitLoading(false);return}
+      const {data,error}=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',project.id).order('created_at',{ascending:true});
+      if(request!==circuitRequest.current)return;
+      if(error)setCircuitStatus('Erro ao carregar circuitos: '+error.message);
+      else setSavedCircuits((data||[]) as SavedCircuit[]);
+      setCircuitLoading(false);
+    })();
+    return()=>{circuitRequest.current++};
+  },[clientId,userId]);
+  async function saveCircuit(){
+    if(!supabase||circuitBusy||circuitLoading)return;
+    const title=circuitTitle.trim();
+    if(!title){setCircuitStatus('Informe o nome do circuito.');return}
+    if(!Number.isFinite(Number(power))||Number(power)<=0||!Number.isFinite(Number(length))||Number(length)<0){setCircuitStatus('Informe potência positiva e comprimento válido.');return}
+    setCircuitBusy(true);setCircuitStatus('');
+    const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
+    if(pe||!project){setCircuitStatus(pe?'Erro: '+pe.message:'Salve primeiro o Tipo de instalação.');setCircuitBusy(false);return}
+    const data={circuit,power,pf,length,material,wiring,insulation,groupCount,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
+    const result=selectedCircuitId
+      ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
+      :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
+    if(result.error)setCircuitStatus('Erro ao salvar circuito: '+result.error.message);
+    else if(result.data){const saved=result.data as SavedCircuit;setSavedCircuits(old=>selectedCircuitId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedCircuitId(saved.id);setCircuitStatus('Circuito salvo no Supabase.');}
+    setCircuitBusy(false);
+  }
+  async function deleteCircuit(){
+    if(!supabase||!selectedCircuitId||circuitBusy||!window.confirm('Excluir este circuito salvo?'))return;
+    setCircuitBusy(true);
+    const id=selectedCircuitId;
+    const {error}=await supabase.from('eletripro_circuits').delete().eq('id',id);
+    if(error)setCircuitStatus('Erro ao excluir: '+error.message);
+    else{setSavedCircuits(old=>old.filter(x=>x.id!==id));clearCircuit();setCircuitStatus('Circuito excluído do Supabase.');}
+    setCircuitBusy(false);
+  }
+
  const {method,temperature,groupMode}=settings;
  const phases=settings.supply==='three'?'three':'single';
  const loaded=settings.supply==='three'?'3':'2';
@@ -137,7 +194,12 @@ function CircuitSizing({onAddToBudget,settings}:{onAddToBudget:(items:BudgetItem
  const noCompliantCandidate=supported&&current!==null&&lengthValid&&!electricalCandidate;
  const fmt=(n:number,d=2)=>n.toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
  const reset=()=>{setPower('');setPf('1');setLength('');setGroupCount('1')};
- return <div className="sizing-layout"><section className="panel sizing-form"><div className="panel-heading"><h2>Dimensionamento de condutores · v0.7.18</h2><button type="button" className="outline" onClick={reset}>Limpar</button></div><p>Estudo preliminar para instalações de baixa tensão. Informe os dados do circuito. A seção é pré-selecionada automaticamente pelos critérios de capacidade de corrente tabelada e queda de tensão resistiva estimada na temperatura nominal do condutor. O sistema utiliza automaticamente 4% como referência provisória para este trecho.</p>
+ return <><section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><h2>Circuitos do projeto</h2><p>Cadastre vários circuitos e recupere seus dados em qualquer dispositivo.</p></div><button type="button" className="outline" disabled={circuitBusy} onClick={clearCircuit}><Plus size={16}/> Novo circuito</button></div>
+  {circuitLoading?<p className="hint">Carregando circuitos...</p>:savedCircuits.length===0?<p className="hint">Nenhum circuito salvo neste projeto.</p>:<div style={{display:'flex',flexWrap:'wrap',gap:8,marginBottom:12}}>{savedCircuits.map(x=><button type="button" key={x.id} className={selectedCircuitId===x.id?'primary':'outline'} onClick={()=>selectSavedCircuit(x)}>{x.title}</button>)}</div>}
+  <label>Nome do circuito<input value={circuitTitle} onChange={e=>setCircuitTitle(e.target.value)} placeholder="Ex.: C1 - Iluminação da sala"/></label>
+  <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:12}}><button type="button" className="primary" disabled={circuitBusy||circuitLoading||!circuitTitle.trim()} onClick={()=>void saveCircuit()}>{circuitBusy?'Aguarde...':selectedCircuitId?'Atualizar circuito':'Salvar circuito'}</button>{selectedCircuitId&&<button type="button" className="outline" disabled={circuitBusy} onClick={()=>void deleteCircuit()}>Excluir circuito</button>}</div>
+  {circuitStatus&&<p className="hint" role="status">{circuitStatus}</p>}
+  <p className="hint">Os dados elétricos abaixo são salvos ao clicar em Salvar/Atualizar circuito. Os resultados são recalculados com os parâmetros atuais de instalação; um resumo também é registrado ao salvar.</p></section><div className="sizing-layout"><section className="panel sizing-form"><div className="panel-heading"><h2>Dimensionamento de condutores · v0.7.18</h2><button type="button" className="outline" onClick={reset}>Limpar</button></div><p>Estudo preliminar para instalações de baixa tensão. Informe os dados do circuito. A seção é pré-selecionada automaticamente pelos critérios de capacidade de corrente tabelada e queda de tensão resistiva estimada na temperatura nominal do condutor. O sistema utiliza automaticamente 4% como referência provisória para este trecho.</p>
  <label>Tipo de circuito<select value={circuit} onChange={e=>setCircuit(e.target.value)}><option value="lighting">Iluminação</option><option value="tug">Tomadas de uso geral</option><option value="tue">Circuito dedicado / TUE</option><option value="motor">Motor / máquina</option><option value="feeder">Alimentador</option><option value="other">Outro</option></select></label>
  <h3>1. Dados elétricos</h3><div className="two"><label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label><label>Tensão definida na instalação<input value={`${voltage||'Não definida'} V`} disabled/></label></div>
  <div className="two"><label>Fornecimento<input value={settings.supply==='single'?'Monofásico':settings.supply==='two'?'Bifásico':'Trifásico'} disabled/></label><label>Fator de potência<input type="number" min="0.01" max="1" step="0.01" value={pf} onChange={e=>setPf(e.target.value)}/></label></div>
@@ -167,7 +229,7 @@ function CircuitSizing({onAddToBudget,settings}:{onAddToBudget:(items:BudgetItem
  <div className="sizing-metric"><span>Curva pré-indicada</span><strong>{tripCurve?`Curva ${tripCurve}`:'Não determinada'}</strong></div>
  </div>
  <p className="hint">Pré-dimensionamento orientativo. A seleção do cabo e do disjuntor exige verificações técnicas complementares antes da aplicação.</p>
- <span className="plan-chip">v0.7.16 · seleção integrada preliminar</span></section></div>
+  <span className="plan-chip">v0.7.19 · circuitos no Supabase</span></section></div></>
 }
 
 function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState('Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false);
@@ -252,7 +314,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Assinatura'&&<section className="panel subscription"><Crown size={32}/><h2>EletriPro Pro</h2><p>Assinatura anual com clientes ilimitados e recursos profissionais.</p><strong>Valor a definir</strong><button className="primary" disabled>Pagamento Pix em preparação</button><small>O acesso Pro só será ativado após confirmação segura do pagamento pelo Mercado Pago.</small></section>}
 {clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div><p className="hint">Tipo de instalação pode ser salvo no Supabase. Os itens do orçamento continuam como rascunho local neste navegador.</p></section>}
 {tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation}/><section className="panel" style={{marginTop:12}}><button type="button" className="primary" disabled={installationLoading||installationSaving} onClick={saveInstallation}>{installationLoading?'Carregando projeto...':installationSaving?'Salvando...':'Salvar tipo de instalação'}</button>{installationStatus&&<p className="hint" role="status">{installationStatus}</p>}</section></>}
-{tab==='Dimensionamento'&&activeClient&&<CircuitSizing onAddToBudget={addSizingToBudget} settings={installationSettings}/>}
+{tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} onAddToBudget={addSizingToBudget} settings={installationSettings}/>}
 {tab==='Materiais'&&activeClient&&<section className="panel"><h2>Materiais do orçamento</h2><p>Lista provisória gerada a partir do dimensionamento. Revise quantidades e especificações antes da compra.</p>{budgetItems.length===0?<p className="hint">Nenhum material incluído. Utilize o botão em Dimensionamento.</p>:<><div style={{overflowX:'auto'}}><table style={{width:'100%'}}><thead><tr><th>Material</th><th>Quantidade</th><th>Unidade</th></tr></thead><tbody>{budgetItems.map(x=><tr key={x.id}><td>{x.description}</td><td>{x.quantity}</td><td>{x.unit}</td></tr>)}</tbody></table></div><button className="primary" onClick={()=>navigate('Orçamentos')}>Abrir orçamento</button></>}</section>}
 {tab==='Orçamentos'&&activeClient&&<section className="panel"><h2>Orçamento de materiais · rascunho</h2><p>Revise os materiais, ajuste as quantidades e os preços ou adicione itens manualmente. Rascunho por cliente salvo neste navegador, ainda não sincronizado com Supabase.</p>
 <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:'10px 8px'}}>Material / descrição</th><th style={{textAlign:'left',padding:'10px 8px',width:90}}>Quantidade</th><th style={{textAlign:'left',padding:'10px 8px',width:65}}>Un.</th><th style={{textAlign:'left',padding:'10px 8px',width:130}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:'10px 8px',width:120}}>Subtotal</th><th style={{width:48}}></th></tr></thead><tbody>{budgetItems.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:'10px 8px',fontSize:13}}>{x.description}</td><td style={{padding:'8px'}}><input aria-label={'Quantidade de '+x.description} type="number" min="0" step="any" value={x.quantity} style={{width:'100%',minWidth:70}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,quantity:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{padding:'8px',fontSize:13}}>{x.unit}</td><td style={{padding:'8px'}}><input aria-label={'Preço unitário de '+x.description} type="number" min="0" step="0.01" value={x.unitPrice} style={{width:'100%',minWidth:105}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{textAlign:'right',padding:'8px',whiteSpace:'nowrap',fontWeight:600}}>{moneyBR(x.quantity*x.unitPrice)}</td><td style={{padding:'8px'}}><button type="button" className="outline" style={{padding:'8px 10px'}} title="Remover item" aria-label={'Remover '+x.description} onClick={()=>setBudgetItems(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
@@ -261,5 +323,5 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 <div className="sizing-metric" style={{padding:16}}><h3 style={{marginTop:0}}>Adicionar item manualmente</h3><label>Descrição do material ou serviço<input value={manualDescription} onChange={e=>setManualDescription(e.target.value)} placeholder="Ex.: Tomada 2P+T 10 A"/></label><div className="two"><label>Unidade<select value={manualUnit} onChange={e=>setManualUnit(e.target.value)}><option value="un">Unidade (un)</option><option value="m">Metro (m)</option><option value="m²">Metro quadrado (m²)</option><option value="h">Hora (h)</option><option value="kg">Quilograma (kg)</option></select></label><label>Quantidade<input type="number" min="0.01" step="any" value={manualQty} onChange={e=>setManualQty(e.target.value)}/></label></div><label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={manualPrice} onChange={e=>setManualPrice(e.target.value)}/></label><button className="primary" type="button" disabled={!manualDescription.trim()||!(Number(manualQty)>0)||!(Number(manualPrice)>=0)} onClick={addManualBudgetItem}><Plus size={16}/> Adicionar item</button></div>
 <p className="hint">Quantidades de cabos são estimativas iniciais, editáveis. Em iluminação, o PE não é incluído automaticamente na lista; verifique sua necessidade conforme a instalação e a NBR 5410. Não inclui automaticamente perdas, reserva técnica ou mão de obra. Os itens são armazenados localmente por cliente neste navegador; não estão sincronizados entre dispositivos.</p></section>}
 {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.18 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.19 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
