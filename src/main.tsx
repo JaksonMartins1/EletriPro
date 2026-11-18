@@ -319,6 +319,79 @@ function CircuitSizing({onAddToBudget,settings,clientId,userId}:{onAddToBudget:(
   <span className="plan-chip">v0.7.19 · circuitos no Supabase</span></section></div></>
 }
 
+type MaterialRow={id:string;description:string;quantity:number;unit:string;unit_price:number};
+async function ensureEletriProject(clientId:string,userId:string){
+ if(!supabase)throw new Error('Supabase indisponível');
+ const found=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
+ if(found.error)throw found.error;
+ if(found.data?.id)return String(found.data.id);
+ const created=await supabase.from('eletripro_projects').insert({client_id:clientId,owner_id:userId}).select('id').single();
+ if(created.error){
+  // Outra aba/dispositivo pode ter criado o projeto simultaneamente.
+  const retry=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
+  if(retry.data?.id)return String(retry.data.id);
+  throw created.error;
+ }
+ return String(created.data.id);
+}
+function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:string;localBudget:BudgetItem[]}){
+ const [rows,setRows]=useState<MaterialRow[]>([]),[projectId,setProjectId]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState('');
+ const [description,setDescription]=useState(''),[quantity,setQuantity]=useState('1'),[unit,setUnit]=useState('un'),[unitPrice,setUnitPrice]=useState('0');
+ const [editingId,setEditingId]=useState<string|null>(null);
+ const [refreshCount,setRefreshCount]=useState(0);
+ useEffect(()=>{
+  let live=true;setRows([]);setProjectId('');setStatus('Carregando materiais...');
+  void (async()=>{try{
+   if(!supabase)throw new Error('Supabase indisponível');
+   const id=await ensureEletriProject(clientId,userId);
+   const result=await supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price').eq('project_id',id).order('created_at',{ascending:true});
+   if(result.error)throw result.error;
+   if(live){setProjectId(id);setRows((result.data||[]) as MaterialRow[]);setStatus('Materiais carregados do Supabase.');}
+  }catch(e){if(live)setStatus('Erro ao carregar materiais: '+(e instanceof Error?e.message:String(e)))}})();
+  return()=>{live=false};
+ },[clientId,userId,refreshCount]);
+ const reset=()=>{setEditingId(null);setDescription('');setQuantity('1');setUnit('un');setUnitPrice('0')};
+ async function save(){
+  if(!supabase||!projectId||busy)return;
+  const q=Number(quantity),price=Number(unitPrice),desc=description.trim();
+  if(!desc||!Number.isFinite(q)||q<0||!Number.isFinite(price)||price<0){setStatus('Informe descrição, quantidade e preço válidos.');return}
+  setBusy(true);setStatus('Salvando...');
+  const payload={description:desc,quantity:q,unit,unit_price:price,updated_at:new Date().toISOString()};
+  const result=editingId
+   ?await supabase.from('eletripro_materials').update(payload).eq('id',editingId).eq('project_id',projectId)
+   :await supabase.from('eletripro_materials').insert({project_id:projectId,...payload});
+  setBusy(false);
+  if(result.error){setStatus('Erro ao salvar: '+result.error.message);return}
+  reset();setRefreshCount(x=>x+1);
+ }
+ async function remove(row:MaterialRow){
+  if(!supabase||!projectId||busy||!window.confirm('Excluir o material '+row.description+'?'))return;
+  setBusy(true);const result=await supabase.from('eletripro_materials').delete().eq('id',row.id).eq('project_id',projectId);
+  setBusy(false);if(result.error){setStatus('Erro ao excluir: '+result.error.message);return}
+  if(editingId===row.id)reset();setRefreshCount(x=>x+1);
+ }
+ async function importBudget(){
+  if(!supabase||!projectId||busy||!localBudget.length)return;
+  if(!window.confirm(`Importar ${localBudget.length} itens do orçamento local para Materiais? Itens já existentes não serão substituídos e poderão ficar duplicados.`))return;
+  setBusy(true);setStatus('Importando itens...');
+  const result=await supabase.from('eletripro_materials').insert(localBudget.map(item=>({project_id:projectId,description:item.description,quantity:item.quantity,unit:item.unit,unit_price:item.unitPrice})));
+  setBusy(false);if(result.error){setStatus('Erro na importação: '+result.error.message);return}
+  setRefreshCount(x=>x+1);
+ }
+ return <section className="panel"><h2>Materiais do projeto · Supabase</h2><p>Materiais vinculados a este cliente, disponíveis em outros dispositivos. O orçamento continua como rascunho local nesta versão.</p>
+ <p className="hint" role="status">{status}</p>
+ <div style={{overflowX:'auto'}}><table style={{width:'100%',minWidth:590}}><thead><tr><th>Descrição</th><th>Quantidade</th><th>Un.</th><th>Preço un.</th><th>Ações</th></tr></thead><tbody>{rows.map(r=><tr key={r.id}><td>{r.description}</td><td>{Number(r.quantity).toLocaleString('pt-BR')}</td><td>{r.unit}</td><td>{moneyBR(Number(r.unit_price))}</td><td><button className="outline" disabled={busy} onClick={()=>{setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price))}}>Editar</button> <button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></td></tr>)}</tbody></table></div>
+ {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
+ <p><strong>Total dos materiais: {moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></p>
+ <div className="sizing-metric" style={{padding:16}}><h3>{editingId?'Editar material':'Novo material'}</h3>
+ <label>Descrição<input value={description} onChange={e=>setDescription(e.target.value)}/></label>
+ <div className="two"><label>Quantidade<input type="number" min="0" step="0.001" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label><label>Unidade<select value={unit} onChange={e=>setUnit(e.target.value)}><option value="un">un</option><option value="m">m</option><option value="m²">m²</option><option value="h">h</option><option value="kg">kg</option></select></label></div>
+ <label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={unitPrice} onChange={e=>setUnitPrice(e.target.value)}/></label>
+ <button className="primary" disabled={busy||!projectId||!description.trim()} onClick={()=>void save()}>{editingId?'Atualizar material':'Salvar material'}</button> {editingId&&<button className="outline" onClick={reset}>Cancelar</button>}</div>
+ {localBudget.length>0&&<div style={{marginTop:16}}><button className="outline" disabled={busy||!projectId} onClick={()=>void importBudget()}>Importar {localBudget.length} itens do orçamento local</button><p className="hint">Importação opcional. Confira duplicidades antes de importar novamente. O orçamento local não será apagado.</p></div>}
+ </section>
+}
+
 function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState('Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false);
  const [budgetItems,setBudgetItems]=useState<BudgetItem[]>([]);
  const [activeClientId,setActiveClientId]=useState<string|null>(null);
@@ -345,7 +418,7 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
     if(activeClientId===clientId)setInstallationStatus(error?'Erro ao salvar: '+error.message:'Tipo de instalação salvo no Supabase.');
     setInstallationSaving(false);
   }
- const addSizingToBudget=(items:BudgetItem[])=>{setBudgetItems(prev=>[...prev,...items]);navigate('Orçamentos');};
+ const addSizingToBudget=(items:BudgetItem[])=>{setBudgetItems(prev=>[...prev,...items]);navigate('Orçamentos');setMsg('Itens adicionados ao orçamento local. Para sincronizá-los no Supabase, abra Materiais e use Importar itens do orçamento local.');};
  useEffect(()=>{
     const request=++installationRequest.current;
     if(!activeClientId||!session?.user?.id||!supabase){setInstallationLoading(false);return}
@@ -403,7 +476,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation}/><section className="panel" style={{marginTop:12}}><button type="button" className="primary" disabled={installationLoading||installationSaving} onClick={saveInstallation}>{installationLoading?'Carregando projeto...':installationSaving?'Salvando...':'Salvar tipo de instalação'}</button>{installationStatus&&<p className="hint" role="status">{installationStatus}</p>}</section></>}
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} onAddToBudget={addSizingToBudget} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
-{tab==='Materiais'&&activeClient&&<section className="panel"><h2>Materiais do orçamento</h2><p>Lista provisória gerada a partir do dimensionamento. Revise quantidades e especificações antes da compra.</p>{budgetItems.length===0?<p className="hint">Nenhum material incluído. Utilize o botão em Dimensionamento.</p>:<><div style={{overflowX:'auto'}}><table style={{width:'100%'}}><thead><tr><th>Material</th><th>Quantidade</th><th>Unidade</th></tr></thead><tbody>{budgetItems.map(x=><tr key={x.id}><td>{x.description}</td><td>{x.quantity}</td><td>{x.unit}</td></tr>)}</tbody></table></div><button className="primary" onClick={()=>navigate('Orçamentos')}>Abrir orçamento</button></>}</section>}
+{tab==='Materiais'&&activeClient&&<MaterialsPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/> }
 {tab==='Orçamentos'&&activeClient&&<section className="panel"><h2>Orçamento de materiais · rascunho</h2><p>Revise os materiais, ajuste as quantidades e os preços ou adicione itens manualmente. Rascunho por cliente salvo neste navegador, ainda não sincronizado com Supabase.</p>
 <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:'10px 8px'}}>Material / descrição</th><th style={{textAlign:'left',padding:'10px 8px',width:90}}>Quantidade</th><th style={{textAlign:'left',padding:'10px 8px',width:65}}>Un.</th><th style={{textAlign:'left',padding:'10px 8px',width:130}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:'10px 8px',width:120}}>Subtotal</th><th style={{width:48}}></th></tr></thead><tbody>{budgetItems.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:'10px 8px',fontSize:13}}>{x.description}</td><td style={{padding:'8px'}}><input aria-label={'Quantidade de '+x.description} type="number" min="0" step="any" value={x.quantity} style={{width:'100%',minWidth:70}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,quantity:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{padding:'8px',fontSize:13}}>{x.unit}</td><td style={{padding:'8px'}}><input aria-label={'Preço unitário de '+x.description} type="number" min="0" step="0.01" value={x.unitPrice} style={{width:'100%',minWidth:105}} onChange={e=>setBudgetItems(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Math.max(0,Number(e.target.value)||0)}:y))}/></td><td style={{textAlign:'right',padding:'8px',whiteSpace:'nowrap',fontWeight:600}}>{moneyBR(x.quantity*x.unitPrice)}</td><td style={{padding:'8px'}}><button type="button" className="outline" style={{padding:'8px 10px'}} title="Remover item" aria-label={'Remover '+x.description} onClick={()=>setBudgetItems(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
 {budgetItems.length===0&&<p className="hint">Nenhum material incluído. Você pode adicionar um item manualmente abaixo ou enviar materiais pelo Dimensionamento.</p>}
@@ -411,5 +484,5 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 <div className="sizing-metric" style={{padding:16}}><h3 style={{marginTop:0}}>Adicionar item manualmente</h3><label>Descrição do material ou serviço<input value={manualDescription} onChange={e=>setManualDescription(e.target.value)} placeholder="Ex.: Tomada 2P+T 10 A"/></label><div className="two"><label>Unidade<select value={manualUnit} onChange={e=>setManualUnit(e.target.value)}><option value="un">Unidade (un)</option><option value="m">Metro (m)</option><option value="m²">Metro quadrado (m²)</option><option value="h">Hora (h)</option><option value="kg">Quilograma (kg)</option></select></label><label>Quantidade<input type="number" min="0.01" step="any" value={manualQty} onChange={e=>setManualQty(e.target.value)}/></label></div><label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={manualPrice} onChange={e=>setManualPrice(e.target.value)}/></label><button className="primary" type="button" disabled={!manualDescription.trim()||!(Number(manualQty)>0)||!(Number(manualPrice)>=0)} onClick={addManualBudgetItem}><Plus size={16}/> Adicionar item</button></div>
 <p className="hint">Quantidades de cabos são estimativas iniciais, editáveis. Em iluminação, o PE não é incluído automaticamente na lista; verifique sua necessidade conforme a instalação e a NBR 5410. Não inclui automaticamente perdas, reserva técnica ou mão de obra. Os itens são armazenados localmente por cliente neste navegador; não estão sincronizados entre dispositivos.</p></section>}
 {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Materiais','Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.20 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.21 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
