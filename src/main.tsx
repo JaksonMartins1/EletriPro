@@ -1,7 +1,7 @@
 import React,{useEffect,useState} from 'react';
 import{createRoot}from'react-dom/client';
 import{LayoutDashboard,Users,Calculator,Ruler,ClipboardList,FileText,Crown,LogOut,Zap,Palette,Menu,X,Plus,ArrowRight,Upload,ShieldCheck,FolderOpen,Mail,LockKeyhole,Building2,ChevronDown}from'lucide-react';
-import{ supabase }from './supabase';import './style.css';
+import{ supabase }from './supabase';import{downloadTechnicalPdf, type ReportSection}from './reportPdf';import './style.css';
 type Client={id:string;name:string;email:string|null;phone:string|null;edit_count:number};
 type WorkStatus='awaiting'|'approved'|'finished';
 type WorkflowRow={client_id:string;status:WorkStatus;budget_id:string|null;completed_at:string|null;amount:number};
@@ -804,51 +804,48 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
 
 type ReportOptions={installation:boolean;environments:boolean;circuits:boolean;distribution:boolean;materials:boolean;labor:boolean;values:boolean};
 const reportDefaults:ReportOptions={installation:true,environments:true,circuits:true,distribution:true,materials:true,labor:true,values:true};
-const safeReport=(v:unknown)=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c));
-function TechnicalReport({client,userId,professional,settings}:{client:Client;userId:string;professional:string;settings:InstallationSettings}){
+const reportLabels:Record<string,string>={residential:'Residencial',commercial:'Comercial',industrial:'Industrial (baixa tensão)',single:'Monofásico',two:'Bifásico',three:'Trifásico',copper:'Cobre',aluminum:'Alumínio',bundle:'Feixe ou conduto fechado',singleLayer:'Camada única', 'phase-neutral':'Fase + neutro','phase-phase':'Duas fases','lighting':'Iluminação','tug':'Tomadas de uso geral (TUG)','tue':'Tomadas de uso específico (TUE)'};
+const reportText=(v:unknown)=>v===null||v===undefined||v===''?'Não informado':String(v);
+const translated=(v:unknown)=>reportLabels[String(v)]||reportText(v);
+const reportNum=(v:unknown)=>{const n=Number(v);return Number.isFinite(n)?n.toLocaleString('pt-BR',{maximumFractionDigits:2}):reportText(v)};
+function TechnicalReport({client,userId,professional,logo,settings}:{client:Client;userId:string;professional:string;logo:string;settings:InstallationSettings}){
  const [options,setOptions]=useState<ReportOptions>(reportDefaults);
  const [busy,setBusy]=useState(false),[error,setError]=useState('');
  const change=(k:keyof ReportOptions,v:boolean)=>setOptions(o=>({...o,[k]:v}));
  const generate=async()=>{
-  const win=window.open('','_blank');
-  if(!win){setError('O navegador bloqueou a janela do relatório. Autorize pop-ups para este site.');return;}
-  win.document.write('<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Preparando relatório</title></head><body><p>Preparando relatório técnico...</p></body></html>');
-  setBusy(true);setError('');
+  if(busy)return;setBusy(true);setError('');
   try{
-   const projectResult=await supabase.from('eletripro_projects').select('id,installation').eq('client_id',client.id).eq('owner_id',userId).maybeSingle();
-   if(projectResult.error)throw projectResult.error;
-   const project=projectResult.data;
-   const projectId=project?.id;
-   const [cir,env,mat]=await Promise.all([
-    projectId&& (options.circuits||options.distribution)?supabase.from('eletripro_circuits').select('*').eq('project_id',projectId):Promise.resolve({data:[],error:null}),
-    projectId&&options.environments?supabase.from('eletripro_environments').select('*').eq('project_id',projectId):Promise.resolve({data:[],error:null}),
-    projectId&&(options.materials||options.labor)?supabase.from('eletripro_materials').select('*').eq('project_id',projectId):Promise.resolve({data:[],error:null})
+   const pr=await supabase.from('eletripro_projects').select('id,installation').eq('client_id',client.id).eq('owner_id',userId).maybeSingle();
+   if(pr.error)throw pr.error;
+   const project=pr.data,id=project?.id;
+   const [cr,er,mr]=await Promise.all([
+    id&&(options.circuits||options.distribution)?supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
+    id&&options.environments?supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
+    id&&(options.materials||options.labor)?supabase.from('eletripro_materials').select('*').eq('project_id',id):Promise.resolve({data:[],error:null})
    ]);
-   for(const r of [cir,env,mat])if(r.error)throw r.error;
-   const circuits=(cir.data||[]) as any[], environments=(env.data||[]) as any[], materials=(mat.data||[]) as any[];
-   const table=(headers:string[],rows:unknown[][])=>`<table><thead><tr>${headers.map(h=>`<th>${safeReport(h)}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(row=>`<tr>${row.map(x=>`<td>${safeReport(x)}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}">Nenhum registro cadastrado</td></tr>`}</tbody></table>`;
-   const section=(title:string,body:string)=>`<section><h2>${safeReport(title)}</h2>${body}</section>`;
-   const data=project?.installation||settings;
-   const fields=(obj:Record<string,unknown>)=>table(['Parâmetro','Valor'],Object.entries(obj).map(([k,v])=>[k,typeof v==='object'?JSON.stringify(v):v]));
-   let body=`<header><h1>${safeReport(professional||'EletriPro')} — Relatório técnico</h1><p>Cliente: <strong>${safeReport(client.name)}</strong></p><p>Telefone: ${safeReport(client.phone)} · E-mail: ${safeReport(client.email)}</p><p>Emissão: ${new Date().toLocaleDateString('pt-BR')}</p></header>`;
-   if(options.installation)body+=section('Parâmetros da instalação',fields({'Aplicação':data.application,'Fornecimento':data.supply,'Tensão (V)':data.voltage,'Método de referência':data.method,'Temperatura (°C)':data.temperature,'Fator de potência':data.powerFactor,'Material condutor':data.conductorMaterial,'Isolação':data.conductorInsulation,'Agrupamento':data.groupCount,'Modo de instalação':data.wiring}));
-   if(options.environments)body+=section('Ambientes',table(['Ambiente','Área / dados cadastrados'],environments.map(e=>[e.title||e.name,JSON.stringify(e.data||{})])));
-   if(options.circuits)body+=section('Circuitos dimensionados',table(['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,c.data?.circuit||c.data?.type,c.data?.power,c.data?.breaker||c.data?.breakerA,c.data?.section||c.data?.sectionMm2])));
-   if(options.distribution)body+=section('Quadro de distribuição',table(['Circuito','Fases atribuídas','Disjuntor','Seção'],circuits.map(c=>[c.title,c.data?.phaseAssignment||c.data?.phases||c.data?.phase||'Não informado',c.data?.breaker||c.data?.breakerA||'—',c.data?.section||c.data?.sectionMm2||'—'])));
-   const chosen=materials.filter(m=>m.item_type==='labor'?options.labor:options.materials);
+   for(const r of [cr,er,mr])if(r.error)throw r.error;
+   const circuits=(cr.data||[]) as SavedCircuit[],rooms=(er.data||[]) as SavedEnvironment[],materials=(mr.data||[]) as MaterialRow[];
+   const sections:ReportSection[]=[];
+   const add=(title:string,headers:string[],rows:(string|number|null|undefined)[][],kind?:'materials')=>sections.push({title,headers,rows,kind});
+   const d={...defaultInstallation,...settings,...(project?.installation||{})};
+   if(options.installation)add('Parâmetros da instalação',['Parâmetro','Valor'],[
+    ['Aplicação',translated(d.application)],['Fornecimento',translated(d.supply)],['Tensão (V)',d.voltage],['Método de referência',d.method],['Temperatura (°C)',d.temperature],['Fator de potência',d.powerFactor],['Material condutor',translated(d.conductorMaterial)],['Isolação',d.conductorInsulation],['Agrupamento',d.groupCount],['Disposição do agrupamento',translated(d.groupMode)],['Modo de instalação',translated(d.wiring)]
+   ]);
+   if(options.environments)add('Ambientes',['Ambiente','Características'],rooms.map(r=>{const a=r.data||{},estimate=estimateRoom(r);return [r.title,`Tipo: ${reportText(a.kind)} | Área: ${reportNum(estimate?.area??a.area)} m² | Dimensões: ${reportNum(a.width)} × ${reportNum(a.length)} m | Perímetro: ${estimate?reportNum(estimate.perimeter)+' m':'Não informado'} | Iluminação: ${estimate?reportNum(estimate.lighting)+' VA':'Não informado'} | TUG: ${estimate?.outlets??'Não informado'} ponto(s), ${estimate?.tug===null?'A definir':reportNum(estimate?.tug)+' VA'}${a.notes?' | Observações: '+a.notes:''}`]}));
+   const result=(c:SavedCircuit)=>(c.data.results||{}) as Record<string,unknown>;
+   if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type),reportNum(c.data.power),reportText(result(c).breaker),reportText(result(c).selectedSection)]));
+   if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Ib (A)'],circuits.map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportText(result(c).current)]}));
+   const chosen=materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials));
    if(options.materials||options.labor){
-    body+=section('Materiais e mão de obra',table(['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,m.quantity,m.unit,...(options.values?[brl(Number(m.unit_price)||0),brl((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])])));
-    if(options.values)body+=`<p class="total">Total: ${safeReport(brl(chosen.reduce((a,m)=>a+(Number(m.quantity)||0)*(Number(m.unit_price)||0),0)))}</p>`;
+    add('Materiais e mão de obra',['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])]),'materials');
    }
-   body+='<footer>Documento gerado a partir dos registros cadastrados na EletriPro. Conferir os cálculos, as condições reais de instalação e a conformidade normativa antes da execução. Não substitui projeto assinado ou ART.</footer>';
-   const html=`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório técnico - ${safeReport(client.name)}</title><style>@page{size:A4;margin:16mm}body{font:12px Arial,sans-serif;color:#17212e;line-height:1.45}h1{font-size:20px;margin:0 0 12px}h2{font-size:15px;border-bottom:2px solid #344e65;padding-bottom:5px;margin-top:22px}header{border-bottom:3px solid #344e65;padding-bottom:12px}header p{margin:4px 0}table{border-collapse:collapse;width:100%;table-layout:fixed}th,td{border:1px solid #ccd2d8;padding:6px;text-align:left;overflow-wrap:anywhere;vertical-align:top}th{background:#eef1f5}tr{break-inside:avoid}section{break-inside:auto}.total{text-align:right;font-size:15px;font-weight:bold}footer{font-size:10px;color:#555;margin-top:25px;border-top:1px solid #ddd;padding-top:8px}@media print{button{display:none}}</style></head><body>${body}<p><button onclick="window.print()">Imprimir / Salvar como PDF</button></p></body></html>`;
-   win.document.open();win.document.write(html);win.document.close();
-  }catch(e:any){setError(e.message||'Falha ao gerar relatório');win.document.body.innerHTML='<p>Não foi possível carregar os dados. Volte ao aplicativo e tente novamente.</p>';}
-  finally{setBusy(false);}
+   const total=options.values&&(options.materials||options.labor)?moneyBR(chosen.reduce((sum,m)=>sum+(Number(m.quantity)||0)*(Number(m.unit_price)||0),0)):undefined;
+   await downloadTechnicalPdf({company:professional||'EletriPro',logo,client:client.name,phone:client.phone||'',email:client.email||'',sections,total},`EletriPro-Relatorio-${client.name.replace(/[^a-zA-Z0-9À-ÿ_-]+/g,'-')}.pdf`);
+  }catch(e:any){setError(e?.message||'Falha ao gerar o PDF. Confira os dados e tente novamente.')}finally{setBusy(false)}
  };
- return <section className="panel"><h2>Relatório técnico em PDF</h2><p>Escolha as seções. Descrição e quantidade permanecem visíveis em todas as listas exportadas. Use a opção Imprimir / Salvar como PDF na janela gerada.</p><div className="ep-report-options">{([
+ return <section className="panel"><h2>Relatório técnico em PDF</h2><p>Selecione as seções desejadas. Descrição e quantidade aparecem em todas as listas exportadas. O arquivo PDF será baixado diretamente.</p><div className="ep-report-options">{([
  ['installation','Tipo de instalação'],['environments','Ambientes'],['circuits','Dimensionamento dos circuitos'],['distribution','Quadro de distribuição'],['materials','Lista de materiais'],['labor','Mão de obra'],['values','Valores e totais']
- ] as [keyof ReportOptions,string][]).map(([key,label])=><label key={key}><input type="checkbox" checked={options[key]} onChange={e=>change(key,e.target.checked)}/> {label}</label>)}</div><button className="primary" type="button" disabled={busy} onClick={()=>void generate()}>{busy?'Preparando...':'Gerar relatório / PDF'}</button>{error&&<p role="alert" className="hint">{error}</p>}<p className="hint">Os dados são consultados diretamente no Supabase. O PDF é salvo pelo navegador; nenhuma alteração é feita nos cadastros.</p></section>
+ ] as [keyof ReportOptions,string][]).map(([key,label])=><label key={key}><input type="checkbox" checked={options[key]} onChange={e=>change(key,e.target.checked)}/> {label}</label>)}</div><button className="primary" type="button" disabled={busy} onClick={()=>void generate()}>{busy?'Gerando PDF...':'Gerar relatório / PDF'}</button>{error&&<p role="alert" className="hint">{error}</p>}<p className="hint">A geração ocorre no navegador, usando os dados do Supabase. Nenhum registro é alterado.</p></section>
 }
 
 function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState('Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false);
@@ -999,7 +996,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
-{tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} settings={installationSettings}/>}
+{tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} logo={logo} settings={installationSettings}/>}
 {tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/></div>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
