@@ -471,7 +471,7 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  <p className="hint">Somas indicativas de Ib por fase, sem simultaneidade, demanda ou cálculo da corrente real do alimentador. Circuitos bipolares e tripolares entram em cada fase envolvida. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p>{message&&<p role="status">{message}</p>}</section>;
 }
 
-type MaterialRow={id:string;description:string;quantity:number;unit:string;unit_price:number};
+type MaterialRow={id:string;description:string;quantity:number;unit:string;unit_price:number;item_type?:'material'|'labor'};
 type GeneratedMaterial=MaterialRow & {source_key:string|null};
 
 async function ensureEletriProject(clientId:string,userId:string){
@@ -494,24 +494,26 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
  const [editingId,setEditingId]=useState<string|null>(null);
  const [editorOpen,setEditorOpen]=useState(false);
  const [refreshCount,setRefreshCount]=useState(0);
+ const [itemType,setItemType]=useState<'material'|'labor'>('material');
+ const [exportMaterials,setExportMaterials]=useState(true),[exportValues,setExportValues]=useState(true),[exportLabor,setExportLabor]=useState(true);
  useEffect(()=>{
   let live=true;setRows([]);setProjectId('');setStatus('Carregando materiais...');
   void (async()=>{try{
    if(!supabase)throw new Error('Supabase indisponível');
    const id=await ensureEletriProject(clientId,userId);
-   const result=await supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price').eq('project_id',id).order('created_at',{ascending:true});
+   const result=await supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price,item_type').eq('project_id',id).order('created_at',{ascending:true});
    if(result.error)throw result.error;
    if(live){setProjectId(id);setRows((result.data||[]) as MaterialRow[]);setStatus('');}
   }catch(e){if(live)setStatus('Erro ao carregar materiais: '+(e instanceof Error?e.message:String(e)))}})();
   return()=>{live=false};
  },[clientId,userId,refreshCount]);
- const reset=()=>{setEditorOpen(false);setEditingId(null);setDescription('');setQuantity('1');setUnit('un');setUnitPrice('0')};
+ const reset=()=>{setEditorOpen(false);setEditingId(null);setDescription('');setQuantity('1');setUnit('un');setUnitPrice('0');setItemType('material')};
  async function save(){
   if(!supabase||!projectId||busy)return;
   const q=Number(quantity),price=Number(unitPrice),desc=description.trim();
   if(!desc||!Number.isFinite(q)||q<0||!Number.isFinite(price)||price<0){setStatus('Informe descrição, quantidade e preço válidos.');return}
   setBusy(true);setStatus('Salvando...');
-  const payload={description:desc,quantity:q,unit,unit_price:price,updated_at:new Date().toISOString()};
+  const payload={description:desc,quantity:q,unit,unit_price:price,item_type:itemType,updated_at:new Date().toISOString()};
   const result=editingId
    ?await supabase.from('eletripro_materials').update(payload).eq('id',editingId).eq('project_id',projectId)
    :await supabase.from('eletripro_materials').insert({project_id:projectId,...payload});
@@ -566,17 +568,36 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
   setBusy(false);if(result.error){setStatus('Erro na importação: '+result.error.message);return}
   setRefreshCount(x=>x+1);
  }
- return <section className="panel"><div className="panel-heading"><div><h2>Materiais cadastrados</h2></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Incluir material</button></div>
+ return <section className="panel"><div className="panel-heading"><div><h2>Materiais e mão de obra</h2></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Incluir item</button></div>
  {status&&<p className="hint" role="status">{status}</p>}
- <div className="ep-record-list">{rows.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,"0")}</span><div className="ep-material-info"><strong>{r.description}</strong><span>{Number(r.quantity).toLocaleString("pt-BR",{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price))}}>Editar</button><button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></div></div>)}</div>
+ <div className="ep-record-list">{rows.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,"0")}</span><div className="ep-material-info"><strong>{r.item_type==='labor'?'Mão de obra · ':''}{r.description}</strong><span>{Number(r.quantity).toLocaleString("pt-BR",{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price));setItemType(r.item_type||'material')}}>Editar</button><button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></div></div>)}</div>
  <div className="ep-material-tools"><button type="button" className="outline" disabled={busy||!projectId} onClick={()=>void consolidateAll()}>Consolidar materiais dos circuitos</button><p className="hint">Atualiza as quantidades de cabos e disjuntores gerados, preservando preços e materiais cadastrados manualmente. Revise as quantidades e os percursos reais.</p></div>
  {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
- <div className="ep-total-highlight"><span>Valor total dos materiais</span><strong>{moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></div>
+ <div className="ep-total-highlight"><span>Total de materiais e mão de obra</span><strong>{moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></div>
  {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)reset()}}><div className="panel sizing-form ep-editor-card" role="dialog" aria-modal={true} aria-label={editingId?'Editar material':'Cadastrar material'}><div className="ep-editor-heading"><h3>{editingId?'Editar material':'Cadastrar material'}</h3><button type="button" className="ep-close" aria-label="Fechar" onClick={reset} disabled={busy}><X size={20}/></button></div>
+ <label>Categoria<select value={itemType} onChange={e=>setItemType(e.target.value as 'material'|'labor')}><option value="material">Material</option><option value="labor">Mão de obra / serviço</option></select></label>
  <label>Descrição<input value={description} onChange={e=>setDescription(e.target.value)}/></label>
  <div className="two"><label>Quantidade<input type="number" min="0" step="0.001" value={quantity} onChange={e=>setQuantity(e.target.value)}/></label><label>Unidade<select value={unit} onChange={e=>setUnit(e.target.value)}><option value="un">un</option><option value="m">m</option><option value="m²">m²</option><option value="h">h</option><option value="kg">kg</option></select></label></div>
  <label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={unitPrice} onChange={e=>setUnitPrice(e.target.value)}/></label>
  <button className="primary" disabled={busy||!projectId||!description.trim()} onClick={()=>void save()}>{editingId?'Atualizar material':'Salvar material'}</button> <button type="button" className="outline" onClick={reset} disabled={busy}>Fechar</button></div></div>}
+ <div className="ep-export-panel" style={{marginTop:20,padding:16,border:'1px solid var(--border, #454954)',borderRadius:12}}>
+ <h3>Exportar lista</h3>
+ <p className="hint">Descrição, quantidade e unidade são campos fixos em todas as exportações. Escolha os grupos e se deseja mostrar valores.</p>
+ <div style={{display:'flex',gap:18,flexWrap:'wrap',marginBottom:12}}>
+ <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportMaterials} onChange={e=>setExportMaterials(e.target.checked)}/> Lista de materiais</label>
+ <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportLabor} onChange={e=>setExportLabor(e.target.checked)}/> Mão de obra</label>
+ <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportValues} onChange={e=>setExportValues(e.target.checked)}/> Valores</label>
+ </div>
+ <button type="button" className="primary" disabled={busy||(!exportMaterials&&!exportLabor)} onClick={()=>{
+  const selected=rows.filter(r=>(r.item_type==='labor'?exportLabor:exportMaterials));
+  if(!selected.length){setStatus('Não há itens das categorias selecionadas para exportar.');return}
+  const escapeCsv=(v:unknown)=>'"'+String(v??'').replace(/"/g,'""')+'"';
+  const cols=['Categoria','Descrição','Quantidade','Unidade',...(exportValues?['Preço unitário (R$)','Subtotal (R$)']:[])];
+  const lines=[cols.map(escapeCsv).join(';'),...selected.map(r=>[r.item_type==='labor'?'Mão de obra':'Material',r.description,Number(r.quantity).toLocaleString('pt-BR',{useGrouping:false,maximumFractionDigits:3}),r.unit,...(exportValues?[Number(r.unit_price).toFixed(2).replace('.',','),(Number(r.quantity)*Number(r.unit_price)).toFixed(2).replace('.',',')]:[])].map(escapeCsv).join(';'))];
+  if(exportValues)lines.push(['TOTAL','','','', '',selected.reduce((a,r)=>a+Number(r.quantity)*Number(r.unit_price),0).toFixed(2).replace('.',',')].map(escapeCsv).join(';'));
+  const blob=new Blob(['\uFEFF'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='EletriPro-lista-materiais.csv';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+ }}>Exportar CSV</button>
+ </div>
  {localBudget.length>0&&<div style={{marginTop:16}}><button className="outline" disabled={busy||!projectId} onClick={()=>void importBudget()}>Importar {localBudget.length} itens do orçamento local</button><p className="hint">Importação opcional. Confira duplicidades antes de importar novamente. O orçamento local não será apagado.</p></div>}
  </section>
 }
@@ -903,7 +924,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
-{tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/><BudgetsPanel key={'budgets-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/></div>}
+{tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/></div>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
  <div className="ep-workflow-head"><div><h2>Situação do cliente</h2><p>{workflowClient.name}</p></div><button className="outline" onClick={()=>setWorkflowClient(null)} disabled={workflowBusy} aria-label="Fechar"><X size={18}/></button></div>
