@@ -801,6 +801,56 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  <button type="button" className="outline" disabled={busy||loading} onClick={closeBudget}>Fechar</button></div>}</section></div>} </div>;
 }
 
+
+type ReportOptions={installation:boolean;environments:boolean;circuits:boolean;distribution:boolean;materials:boolean;labor:boolean;values:boolean};
+const reportDefaults:ReportOptions={installation:true,environments:true,circuits:true,distribution:true,materials:true,labor:true,values:true};
+const safeReport=(v:unknown)=>String(v??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]||c));
+function TechnicalReport({client,userId,professional,settings}:{client:Client;userId:string;professional:string;settings:InstallationSettings}){
+ const [options,setOptions]=useState<ReportOptions>(reportDefaults);
+ const [busy,setBusy]=useState(false),[error,setError]=useState('');
+ const change=(k:keyof ReportOptions,v:boolean)=>setOptions(o=>({...o,[k]:v}));
+ const generate=async()=>{
+  const win=window.open('','_blank');
+  if(!win){setError('O navegador bloqueou a janela do relatório. Autorize pop-ups para este site.');return;}
+  win.document.write('<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Preparando relatório</title></head><body><p>Preparando relatório técnico...</p></body></html>');
+  setBusy(true);setError('');
+  try{
+   const projectResult=await supabase.from('eletripro_projects').select('id,installation').eq('client_id',client.id).eq('owner_id',userId).maybeSingle();
+   if(projectResult.error)throw projectResult.error;
+   const project=projectResult.data;
+   const projectId=project?.id;
+   const [cir,env,mat]=await Promise.all([
+    projectId&& (options.circuits||options.distribution)?supabase.from('eletripro_circuits').select('*').eq('project_id',projectId):Promise.resolve({data:[],error:null}),
+    projectId&&options.environments?supabase.from('eletripro_environments').select('*').eq('project_id',projectId):Promise.resolve({data:[],error:null}),
+    projectId&&(options.materials||options.labor)?supabase.from('eletripro_materials').select('*').eq('project_id',projectId):Promise.resolve({data:[],error:null})
+   ]);
+   for(const r of [cir,env,mat])if(r.error)throw r.error;
+   const circuits=(cir.data||[]) as any[], environments=(env.data||[]) as any[], materials=(mat.data||[]) as any[];
+   const table=(headers:string[],rows:unknown[][])=>`<table><thead><tr>${headers.map(h=>`<th>${safeReport(h)}</th>`).join('')}</tr></thead><tbody>${rows.length?rows.map(row=>`<tr>${row.map(x=>`<td>${safeReport(x)}</td>`).join('')}</tr>`).join(''):`<tr><td colspan="${headers.length}">Nenhum registro cadastrado</td></tr>`}</tbody></table>`;
+   const section=(title:string,body:string)=>`<section><h2>${safeReport(title)}</h2>${body}</section>`;
+   const data=project?.installation||settings;
+   const fields=(obj:Record<string,unknown>)=>table(['Parâmetro','Valor'],Object.entries(obj).map(([k,v])=>[k,typeof v==='object'?JSON.stringify(v):v]));
+   let body=`<header><h1>${safeReport(professional||'EletriPro')} — Relatório técnico</h1><p>Cliente: <strong>${safeReport(client.name)}</strong></p><p>Telefone: ${safeReport(client.phone)} · E-mail: ${safeReport(client.email)}</p><p>Emissão: ${new Date().toLocaleDateString('pt-BR')}</p></header>`;
+   if(options.installation)body+=section('Parâmetros da instalação',fields({'Aplicação':data.application,'Fornecimento':data.supply,'Tensão (V)':data.voltage,'Método de referência':data.method,'Temperatura (°C)':data.temperature,'Fator de potência':data.powerFactor,'Material condutor':data.conductorMaterial,'Isolação':data.conductorInsulation,'Agrupamento':data.groupCount,'Modo de instalação':data.wiring}));
+   if(options.environments)body+=section('Ambientes',table(['Ambiente','Área / dados cadastrados'],environments.map(e=>[e.title||e.name,JSON.stringify(e.data||{})])));
+   if(options.circuits)body+=section('Circuitos dimensionados',table(['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,c.data?.circuit||c.data?.type,c.data?.power,c.data?.breaker||c.data?.breakerA,c.data?.section||c.data?.sectionMm2])));
+   if(options.distribution)body+=section('Quadro de distribuição',table(['Circuito','Fases atribuídas','Disjuntor','Seção'],circuits.map(c=>[c.title,c.data?.phaseAssignment||c.data?.phases||c.data?.phase||'Não informado',c.data?.breaker||c.data?.breakerA||'—',c.data?.section||c.data?.sectionMm2||'—'])));
+   const chosen=materials.filter(m=>m.item_type==='labor'?options.labor:options.materials);
+   if(options.materials||options.labor){
+    body+=section('Materiais e mão de obra',table(['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,m.quantity,m.unit,...(options.values?[brl(Number(m.unit_price)||0),brl((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])])));
+    if(options.values)body+=`<p class="total">Total: ${safeReport(brl(chosen.reduce((a,m)=>a+(Number(m.quantity)||0)*(Number(m.unit_price)||0),0)))}</p>`;
+   }
+   body+='<footer>Documento gerado a partir dos registros cadastrados na EletriPro. Conferir os cálculos, as condições reais de instalação e a conformidade normativa antes da execução. Não substitui projeto assinado ou ART.</footer>';
+   const html=`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório técnico - ${safeReport(client.name)}</title><style>@page{size:A4;margin:16mm}body{font:12px Arial,sans-serif;color:#17212e;line-height:1.45}h1{font-size:20px;margin:0 0 12px}h2{font-size:15px;border-bottom:2px solid #344e65;padding-bottom:5px;margin-top:22px}header{border-bottom:3px solid #344e65;padding-bottom:12px}header p{margin:4px 0}table{border-collapse:collapse;width:100%;table-layout:fixed}th,td{border:1px solid #ccd2d8;padding:6px;text-align:left;overflow-wrap:anywhere;vertical-align:top}th{background:#eef1f5}tr{break-inside:avoid}section{break-inside:auto}.total{text-align:right;font-size:15px;font-weight:bold}footer{font-size:10px;color:#555;margin-top:25px;border-top:1px solid #ddd;padding-top:8px}@media print{button{display:none}}</style></head><body>${body}<p><button onclick="window.print()">Imprimir / Salvar como PDF</button></p></body></html>`;
+   win.document.open();win.document.write(html);win.document.close();
+  }catch(e:any){setError(e.message||'Falha ao gerar relatório');win.document.body.innerHTML='<p>Não foi possível carregar os dados. Volte ao aplicativo e tente novamente.</p>';}
+  finally{setBusy(false);}
+ };
+ return <section className="panel"><h2>Relatório técnico em PDF</h2><p>Escolha as seções. Descrição e quantidade permanecem visíveis em todas as listas exportadas. Use a opção Imprimir / Salvar como PDF na janela gerada.</p><div className="ep-report-options">{([
+ ['installation','Tipo de instalação'],['environments','Ambientes'],['circuits','Dimensionamento dos circuitos'],['distribution','Quadro de distribuição'],['materials','Lista de materiais'],['labor','Mão de obra'],['values','Valores e totais']
+ ] as [keyof ReportOptions,string][]).map(([key,label])=><label key={key}><input type="checkbox" checked={options[key]} onChange={e=>change(key,e.target.checked)}/> {label}</label>)}</div><button className="primary" type="button" disabled={busy} onClick={()=>void generate()}>{busy?'Preparando...':'Gerar relatório / PDF'}</button>{error&&<p role="alert" className="hint">{error}</p>}<p className="hint">Os dados são consultados diretamente no Supabase. O PDF é salvo pelo navegador; nenhuma alteração é feita nos cadastros.</p></section>
+}
+
 function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState('Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false);
  const [workflows,setWorkflows]=useState<WorkflowRow[]>([]);
  const [workflowClient,setWorkflowClient]=useState<Client|null>(null);
@@ -814,7 +864,7 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
  const [activeClientId,setActiveClientId]=useState<string|null>(null);
  const [clientAreaTab,setClientAreaTab]=useState('Tipo de instalação');
  const budgetLoadedFor=React.useRef<string|null>(null);
- const clientAreaTabs=['Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos'];
+ const clientAreaTabs=['Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos','Relatórios'];
  const clientAreaOpen=clientAreaTabs.includes(tab);
  const activeClient=clients.find(c=>c.id===activeClientId);
  const clientStorageKey=(suffix:string)=>`eletripro-client-${session?.user?.id||'anon'}-${activeClientId||'none'}-${suffix}`;
@@ -949,6 +999,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
+{tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} settings={installationSettings}/>}
 {tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/></div>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
@@ -961,6 +1012,6 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Ganhos por mês"><div className="ep-workflow-head"><h2>Ganhos por mês</h2><button className="outline" onClick={()=>setShowEarnings(false)} aria-label="Fechar"><X size={18}/></button></div>
  {monthlyEarnings.length?monthlyEarnings.map(([month,total])=><div className="ep-month-row" key={month}><span>{monthLabel(month+'-01')}</span><strong>{brl(total)}</strong></div>):<p>Nenhum serviço finalizado com orçamento registrado.</p>}
  <div className="ep-total-highlight"><span>Total acumulado</span><strong>{brl(earningsTotal)}</strong></div><button className="outline" onClick={()=>setShowEarnings(false)}>Fechar</button></section></div>}
- {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
+ {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos','Relatórios'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
 </main><footer>EletriPro · Interface v0.7.37 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
