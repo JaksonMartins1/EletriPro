@@ -119,3 +119,13 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-workflow-dialog select{width:100%}
 .ep-month-row{display:flex;justify-content:space-between;gap:16px;border-bottom:1px solid #373d45;padding:12px 2px;text-transform:capitalize}
 @media(max-width:650px){.ep-workflow-dialog{padding:18px}.ep-dashboard-stats{grid-template-columns:repeat(2,minmax(0,1fr))}}
+
+/* v0.7.32 — painel enxuto, abas unificadas e janelas adaptadas ao celular */
+.ep-dashboard-clean{grid-template-columns:repeat(2,minmax(0,1fr));align-items:stretch}
+.ep-client-card{border:1px solid #353b45;border-radius:16px;padding:20px;background:#1b1e24;display:flex;flex-direction:column;gap:12px;align-items:flex-start;color:inherit;text-align:left;cursor:pointer}
+.ep-client-card span{color:#b7beca;font-size:13px}.ep-client-card strong{font-size:clamp(22px,3vw,28px)}.ep-client-card small{color:#e8c76b}.ep-client-card:hover{background:#262930;border-color:var(--accent)}
+.ep-status-card{gap:13px!important}.ep-status-rows{display:grid;width:100%;gap:0}.ep-status-rows>div{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 0;border-bottom:1px solid #343943}.ep-status-rows>div:last-child{border:0}.ep-status-rows>div span{font-size:13px}.ep-status-rows>div strong{font-size:18px;flex-shrink:0}
+.ep-material-budget-layout{display:grid;gap:18px}.ep-material-budget-layout>.panel{margin-bottom:0}
+.ep-workflow-dialog{gap:14px;max-height:calc(100dvh - 24px);overflow-y:auto}.ep-workflow-dialog .ep-summary-actions{margin-top:0}.ep-workflow-dialog .ep-summary-actions button{min-height:43px}
+@media(max-width:720px){.ep-dashboard-clean{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ep-dashboard-clean>article,.ep-dashboard-clean>.ep-client-card,.ep-dashboard-clean>.ep-earnings-card{padding:15px;min-width:0}.ep-dashboard-clean .ep-status-card{grid-column:1/-1;grid-row:2}.ep-status-rows>div{padding:10px 0}.ep-modal-backdrop{align-items:center;padding:10px}.ep-modal-backdrop>.ep-editor-card,.ep-modal-backdrop>.ep-circuit-editor{max-height:calc(100dvh - 20px)}.ep-workflow-dialog{width:100%;padding:18px;gap:12px}.ep-workflow-dialog select{min-height:44px}.ep-workflow-dialog .ep-summary-actions{display:flex;flex-wrap:wrap}.ep-workflow-dialog .ep-summary-actions button{flex:1;min-width:110px}.ep-material-actions{margin-left:0}.ep-form-footer button{min-height:44px}}
+@media(max-width:420px){.ep-dashboard-clean{grid-template-columns:1fr 1fr}.ep-dashboard-clean>article:not(.ep-status-card),.ep-dashboard-clean>.ep-client-card,.ep-dashboard-clean>.ep-earnings-card{padding:13px}.ep-dashboard-clean strong{overflow-wrap:anywhere}.ep-dashboard-clean .ep-status-card{padding:15px}}
