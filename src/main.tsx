@@ -808,7 +808,7 @@ const reportLabels:Record<string,string>={residential:'Residencial',commercial:'
 const reportText=(v:unknown)=>v===null||v===undefined||v===''?'Não informado':String(v);
 const translated=(v:unknown)=>reportLabels[String(v)]||reportText(v);
 const reportNum=(v:unknown)=>{const n=Number(v);return Number.isFinite(n)?n.toLocaleString('pt-BR',{maximumFractionDigits:2}):reportText(v)};
-function TechnicalReport({client,userId,professional,logo,settings}:{client:Client;userId:string;professional:string;logo:string;settings:InstallationSettings}){
+function TechnicalReport({client,userId,professional,logo,accent,settings}:{client:Client;userId:string;professional:string;logo:string;accent:string;settings:InstallationSettings}){
  const [options,setOptions]=useState<ReportOptions>(reportDefaults);
  const [busy,setBusy]=useState(false),[error,setError]=useState('');
  const change=(k:keyof ReportOptions,v:boolean)=>setOptions(o=>({...o,[k]:v}));
@@ -833,14 +833,14 @@ function TechnicalReport({client,userId,professional,logo,settings}:{client:Clie
    ]);
    if(options.environments)add('Ambientes',['Ambiente','Características'],rooms.map(r=>{const a=r.data||{},estimate=estimateRoom(r);return [r.title,`Tipo: ${reportText(a.kind)} | Área: ${reportNum(estimate?.area??a.area)} m² | Dimensões: ${reportNum(a.width)} × ${reportNum(a.length)} m | Perímetro: ${estimate?reportNum(estimate.perimeter)+' m':'Não informado'} | Iluminação: ${estimate?reportNum(estimate.lighting)+' VA':'Não informado'} | TUG: ${estimate?.outlets??'Não informado'} ponto(s), ${estimate?.tug===null?'A definir':reportNum(estimate?.tug)+' VA'}${a.notes?' | Observações: '+a.notes:''}`]}));
    const result=(c:SavedCircuit)=>(c.data.results||{}) as Record<string,unknown>;
-   if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type),reportNum(c.data.power),reportText(result(c).breaker),reportText(result(c).selectedSection)]));
-   if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Ib (A)'],circuits.map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportText(result(c).current)]}));
+   if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type||( /iluminaç[aã]o|lighting/i.test(c.title)?'lighting':undefined)),reportNum(c.data.power),reportText(result(c).breaker),reportText(result(c).selectedSection)]));
+   if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Corrente de Projeto (A)'],[...circuits].sort((a,b)=>(Number(result(b).breaker)||0)-(Number(result(a).breaker)||0)).map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportText(result(c).current)]}));
    const chosen=materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials));
    if(options.materials||options.labor){
     add('Materiais e mão de obra',['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])]),'materials');
    }
    const total=options.values&&(options.materials||options.labor)?moneyBR(chosen.reduce((sum,m)=>sum+(Number(m.quantity)||0)*(Number(m.unit_price)||0),0)):undefined;
-   await downloadTechnicalPdf({company:professional||'EletriPro',logo,client:client.name,phone:client.phone||'',email:client.email||'',sections,total},`EletriPro-Relatorio-${client.name.replace(/[^a-zA-Z0-9À-ÿ_-]+/g,'-')}.pdf`);
+   await downloadTechnicalPdf({company:professional||'EletriPro',logo,accent,client:client.name,phone:client.phone||'',email:client.email||'',sections,total},`EletriPro-Relatorio-${client.name.replace(/[^a-zA-Z0-9À-ÿ_-]+/g,'-')}.pdf`);
   }catch(e:any){setError(e?.message||'Falha ao gerar o PDF. Confira os dados e tente novamente.')}finally{setBusy(false)}
  };
  return <section className="panel"><h2>Relatório técnico em PDF</h2><p>Selecione as seções desejadas. Descrição e quantidade aparecem em todas as listas exportadas. O arquivo PDF será baixado diretamente.</p><div className="ep-report-options">{([
@@ -996,7 +996,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
-{tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} logo={logo} settings={installationSettings}/>}
+{tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} logo={logo} accent={accent} settings={installationSettings}/>}
 {tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/></div>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
