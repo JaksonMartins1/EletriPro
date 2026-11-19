@@ -245,7 +245,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     setCircuitBusy(true);setCircuitStatus('');
     const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
     if(pe||!project){setCircuitStatus(pe?'Erro: '+pe.message:'Salve primeiro o Tipo de instalação.');setCircuitBusy(false);return}
-    const data={circuit,environmentId:environmentId||null,loadMode,loadLinks,power:powerForSizing,manualPower:power,powerVA:loadMode==='rooms'?roomCalculation.va:null,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount,panelPhase:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelPhase||'A'):'A',results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
+    const data={circuit,environmentId:environmentId||null,loadMode,loadLinks,power:powerForSizing,manualPower:power,powerVA:loadMode==='rooms'?roomCalculation.va:null,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount,panelPhase:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelPhase||'A'):'A',panelConnection:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelConnection||null):null,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
     const result=selectedCircuitId
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
@@ -411,19 +411,64 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  <div className="ep-modal-actions"><button type="button" className="primary" disabled={circuitBusy||circuitLoading||!circuitTitle.trim()||!Number.isFinite(p)||p<=0||!Number.isFinite(l)||l<=0} onClick={()=>void saveCircuit()}>{circuitBusy?'Salvando...':selectedCircuitId?'Atualizar circuito':'Salvar circuito'}</button>{selectedCircuitId&&<button type="button" className="outline" disabled={circuitBusy} onClick={()=>void deleteCircuit()}>Excluir circuito</button>}</div></>}<button type="button" className="outline ep-modal-close-bottom" onClick={clearCircuit} disabled={circuitBusy}>Fechar</button></div></div>}</>
 }
 
+type PanelConnection='A'|'B'|'C'|'AB'|'BC'|'CA'|'ABC';
+const panelCurrent=(row:SavedCircuit)=>{const results=(row.data.results||{}) as Record<string,unknown>;const n=Number(results.current);return Number.isFinite(n)&&n>0?n:0};
+const panelPoles=(row:SavedCircuit,settings:InstallationSettings)=>{
+ const wiring=String(row.data.wiring||settings.wiring);
+ return wiring==='three'?3:wiring==='phase-phase'?2:1;
+};
+const panelChoices=(settings:InstallationSettings,poles:number):PanelConnection[]=>{
+ if(settings.supply==='single')return ['A'];
+ if(settings.supply==='two')return poles===2?['AB']:['A','B'];
+ return poles===3?['ABC']:poles===2?['AB','BC','CA']:['A','B','C'];
+};
 function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
- const [rows,setRows]=useState<SavedCircuit[]>([]),[loading,setLoading]=useState(true),[busy,setBusy]=useState<string|null>(null),[message,setMessage]=useState('');
+ const [rows,setRows]=useState<SavedCircuit[]>([]),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
  const [projectId,setProjectId]=useState('');
  useEffect(()=>{let live=true;void(async()=>{try{const id=await ensureEletriProject(clientId,userId);if(!supabase)return;const r=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true});if(r.error)throw r.error;if(live){setRows((r.data||[]) as SavedCircuit[]);setProjectId(id)}}catch(e){if(live)setMessage('Erro ao carregar quadro: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
  const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
- async function assign(row:SavedCircuit,phase:string){if(!supabase||!projectId||busy)return;setBusy(row.id);
- const data={...row.data,panelPhase:phase};const r=await supabase.from('eletripro_circuits').update({data,updated_at:new Date().toISOString()}).eq('id',row.id).eq('project_id',projectId);
- if(r.error)setMessage('Erro ao salvar fase: '+r.error.message);else setRows(old=>old.map(x=>x.id===row.id?{...x,data}:x));setBusy(null);
+ const optionsFor=(row:SavedCircuit)=>panelChoices(settings,panelPoles(row,settings));
+ const connectionFor=(row:SavedCircuit):PanelConnection=>{
+  const options=optionsFor(row);const saved=String(row.data.panelConnection||row.data.panelPhase||'A') as PanelConnection;
+  return options.includes(saved)?saved:options[0];
+ };
+ async function persistChanges(changes:{id:string;connection:PanelConnection}[]){
+  if(!supabase||!projectId||busy||changes.length===0)return;
+  setBusy(true);setMessage('');
+  let next=[...rows];let updated=0;
+  for(const change of changes){
+   const row=next.find(x=>x.id===change.id);if(!row)continue;
+   const data={...row.data,panelConnection:change.connection,panelPhase:change.connection};
+   const result=await supabase.from('eletripro_circuits').update({data,updated_at:new Date().toISOString()}).eq('id',row.id).eq('project_id',projectId);
+   if(result.error){setMessage(`Foram salvos ${updated} de ${changes.length} circuitos. Erro em ${row.title}: ${result.error.message}`);break}
+   next=next.map(x=>x.id===row.id?{...x,data}:x);updated++;
+  }
+  setRows(next);if(updated===changes.length)setMessage(updated===1?'Circuito atualizado.':`${updated} circuitos atualizados.`);setBusy(false);
  }
- const sums=Object.fromEntries(phases.map(p=>[p,rows.filter(r=>(r.data.panelPhase||'A')===p).reduce((n,r)=>n+Number(r.data.results&&typeof r.data.results==='object'?(r.data.results as Record<string,unknown>).current||0:0),0)]));
- return <section className="panel"><h2>Quadro de distribuição</h2><p className="hint">Organização preliminar dos circuitos. Defina manualmente a fase; não há dimensionamento de barramentos, curto-circuito, DR ou DPS nesta etapa.</p>
- {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:<div className="ep-distribution-list">{rows.map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;return <div className="ep-distribution-item" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div><strong>{row.title}</strong><small>Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {result.current?`${Number(result.current).toFixed(1)} A`:'—'}</small></div><label>Fase<select value={phases.includes(String(row.data.panelPhase))?String(row.data.panelPhase):'A'} disabled={busy===row.id} onChange={e=>void assign(row,e.target.value)}>{phases.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
- <div className="ep-summary-grid">{phases.map(p=><div key={p}><span>Corrente de projeto associada à fase {p}</span><strong>{sums[p].toLocaleString('pt-BR',{maximumFractionDigits:1})} A</strong></div>)}</div><p className="hint">As somas são apenas indicativas, sem fatores de demanda e sem balanceamento automático. Verifique a alimentação e os dispositivos de proteção antes da execução.</p>{message&&<p role="status">{message}</p>}</section>
+ const sums=Object.fromEntries(phases.map(p=>[p,rows.reduce((n,row)=>n+(connectionFor(row).includes(p)?panelCurrent(row):0),0)])) as Record<string,number>;
+ const balance=()=>{
+  if(busy||!rows.length)return;
+  const loads=Object.fromEntries(phases.map(p=>[p,0])) as Record<string,number>;
+  const assigned=new Map<string,PanelConnection>();
+  // Cargas multipolares são mantidas na ligação válida e entram em cada fase envolvida.
+  rows.filter(row=>optionsFor(row).length===1).forEach(row=>{const conn=connectionFor(row);assigned.set(row.id,conn);for(const p of phases)if(conn.includes(p))loads[p]+=panelCurrent(row)});
+  rows.filter(row=>optionsFor(row).length>1).sort((a,b)=>panelCurrent(b)-panelCurrent(a)).forEach(row=>{
+   const choices=optionsFor(row);const choice=[...choices].sort((a,b)=>{
+    const loadA=Math.max(...phases.filter(p=>a.includes(p)).map(p=>loads[p]+panelCurrent(row)));
+    const loadB=Math.max(...phases.filter(p=>b.includes(p)).map(p=>loads[p]+panelCurrent(row)));
+    return loadA-loadB;
+   })[0];assigned.set(row.id,choice);for(const p of phases)if(choice.includes(p))loads[p]+=panelCurrent(row);
+  });
+  const changes=rows.filter(row=>assigned.get(row.id)!==connectionFor(row)).map(row=>({id:row.id,connection:assigned.get(row.id)!}));
+  if(!changes.length){setMessage('Nenhuma alteração necessária para a distribuição automática.');return}
+  if(window.confirm(`Distribuir automaticamente ${changes.length} circuito(s) pelas fases? As atribuições atuais desses circuitos serão substituídas.`))void persistChanges(changes);
+ };
+ const numberBR=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:1});
+ return <section className="panel"><div className="panel-heading"><h2>Quadro de distribuição</h2>{phases.length>1&&<button type="button" className="outline" disabled={busy||loading||!rows.length} onClick={balance}>Distribuir fases automaticamente</button>}</div>
+ <p className="hint">Organize as ligações dos circuitos e confira a distribuição preliminar de corrente por fase.</p>
+ {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:<div className="ep-distribution-list">{rows.map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;const poles=panelPoles(row,settings);const choices=optionsFor(row);return <div className="ep-distribution-item ep-panel-circuit" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div className="ep-panel-circuit-info"><strong>{row.title}</strong><small>Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · {poles} {poles===1?'polo':'polos'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {panelCurrent(row)?`${numberBR(panelCurrent(row))} A`:'—'}</small></div><label>Fase(s)<select value={connectionFor(row)} disabled={busy||choices.length===1} onChange={e=>void persistChanges([{id:row.id,connection:e.target.value as PanelConnection}])}>{choices.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
+ <h3 className="ep-panel-subtitle">Resumo por fase</h3><div className="ep-summary-grid">{phases.map(p=><div key={p}><span>Soma das correntes dos circuitos na fase {p}</span><strong>{numberBR(sums[p])} A</strong></div>)}</div>
+ <p className="hint">Somas indicativas de Ib por fase, sem simultaneidade, demanda ou cálculo da corrente real do alimentador. Circuitos bipolares e tripolares entram em cada fase envolvida. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p>{message&&<p role="status">{message}</p>}</section>;
 }
 
 type MaterialRow={id:string;description:string;quantity:number;unit:string;unit_price:number};
@@ -871,5 +916,5 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
  {monthlyEarnings.length?monthlyEarnings.map(([month,total])=><div className="ep-month-row" key={month}><span>{monthLabel(month+'-01')}</span><strong>{brl(total)}</strong></div>):<p>Nenhum serviço finalizado com orçamento registrado.</p>}
  <div className="ep-total-highlight"><span>Total acumulado</span><strong>{brl(earningsTotal)}</strong></div><button className="outline" onClick={()=>setShowEarnings(false)}>Fechar</button></section></div>}
  {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.35 · Dados de demonstração identificados</footer></div></div>}
+</main><footer>EletriPro · Interface v0.7.37 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);

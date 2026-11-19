@@ -144,3 +144,10 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-distribution-item select{min-width:0;width:100%;padding:9px}
 .ep-material-tools{margin:16px 0;display:grid;gap:8px}
 @media(max-width:650px){.ep-distribution-item{grid-template-columns:auto minmax(0,1fr);gap:10px}.ep-distribution-item label{grid-column:2;width:100%}.ep-load-links{padding:12px}}
+
+/* v0.7.37 — quadro de distribuição */
+.ep-panel-circuit{display:grid;grid-template-columns:auto minmax(0,1fr) minmax(130px,180px);gap:14px;align-items:center}
+.ep-panel-circuit-info{min-width:0;display:grid;gap:5px}.ep-panel-circuit-info small{line-height:1.5}
+.ep-panel-circuit label{display:grid;gap:6px;margin:0}.ep-panel-circuit select{width:100%;min-width:0}
+.ep-panel-subtitle{margin:22px 0 12px}
+@media(max-width:650px){.ep-panel-circuit{grid-template-columns:auto minmax(0,1fr)}.ep-panel-circuit label{grid-column:2;max-width:100%}.ep-panel-circuit-info small{overflow-wrap:anywhere}}
