@@ -36,12 +36,15 @@ function readInstallation():InstallationSettings{try{const saved=JSON.parse(loca
 function InstallationSetup({settings,onChange,onSave,saving}:{settings:InstallationSettings;onChange:(s:InstallationSettings)=>void;onSave:()=>void;saving:boolean}){
  const update=(key:keyof InstallationSettings,value:string)=>onChange({...settings,[key]:value,...(key==='method'?{groupMode:'bundle'}:{})});
  return <section className="panel sizing-form"><h2>Tipo de instalação</h2>
- <div className="two"><label>Tipo de instalação<select value={settings.application} onChange={e=>update('application',e.target.value)}><option value="residential">Residencial</option><option value="commercial">Comercial</option><option value="industrial">Industrial (baixa tensão)</option></select></label><label>Fornecimento da concessionária<select value={settings.supply} onChange={e=>update('supply',e.target.value)}><option value="single">Monofásico</option><option value="two">Bifásico</option><option value="three">Trifásico</option></select></label></div>
+ <div className="two"><label>Tipo de instalação<select value={settings.application} onChange={e=>update('application',e.target.value)}><option value="residential">Residencial</option><option value="commercial">Comercial</option><option value="industrial">Industrial (baixa tensão)</option></select></label></div>
+ <p className="hint" role="note"><strong>Projeto novo:</strong> cadastre primeiro os ambientes e os circuitos. A configuração de fornecimento utilizada nos cálculos do quadro e alimentador é provisória até o enquadramento pela concessionária. Para a rede CELESC 220/380 V, a proposta de fornecimento é calculada após o cadastro das cargas. Verifique as condições da rede e os equipamentos especiais.</p>
  <div className="two"><label>Tensão padrão dos circuitos (V)<input type="number" min="1" value={settings.voltage} onChange={e=>update('voltage',e.target.value)} placeholder="Ex.: 220"/></label></div>
- {settings.supply!=='single'&&<div className="two"><label>Tensão fase-neutro — VFN (V)<input type="number" min="1" value={settings.voltageFN||''} onChange={e=>update('voltageFN',e.target.value)} placeholder="Ex.: 220"/></label><label>Tensão fase-fase — VFF (V)<input type="number" min="1" value={settings.voltageFF||''} onChange={e=>update('voltageFF',e.target.value)} placeholder="Ex.: 380"/></label></div>}
+ <div className="two"><label>Tensão fase-neutro — VFN (V)<input type="number" min="1" value={settings.voltageFN||''} onChange={e=>update('voltageFN',e.target.value)} placeholder="Ex.: 220"/></label><label>Tensão fase-fase — VFF (V)<input type="number" min="1" value={settings.voltageFF||''} onChange={e=>update('voltageFF',e.target.value)} placeholder="Ex.: 380"/></label></div>
  <p className="hint">A tensão do circuito permanece independente. Para alimentadores com mais de uma fase, informe VFN e VFF conforme o fornecimento real; não convertemos automaticamente circuitos existentes.</p>
  <p className="hint" role="note"><strong>Premissa residencial automática:</strong> condutores isolados de cobre em eletrodutos embutidos em alvenaria — método de referência B1, PVC 70 °C, ambiente de 30 °C e agrupamento conforme cadastro. A tensão não permite identificar a instalação física; confirme a premissa antes da execução. Configurações técnicas estão disponíveis abaixo.</p>
- <details className="ep-details"><summary>Configurações técnicas avançadas — alterar somente se a instalação física for diferente</summary>
+ <details className="ep-details"><summary>Configurações técnicas avançadas</summary>
+ <p className="hint" role="alert">O fornecimento será proposto automaticamente após cadastrar os circuitos. A alteração de fases exige revisar ligações do QD e redimensionar o alimentador.</p>
+ <p className="hint">O fornecimento é calculado a partir dos circuitos cadastrados; não precisa ser selecionado nesta etapa.</p>
  {!['B1','B2','C'].includes(settings.method)&&<p className="hint" role="alert">Método anteriormente cadastrado ({settings.method}) não possui tabela de dimensionamento implementada. Selecione um método suportado após verificar a instalação física.</p>}
  <label>Método de referência<select value={settings.method} onChange={e=>update('method',e.target.value)}>{['B1','B2','C'].map(x=><option key={x}>{x}</option>)}</select></label>
  <div className="two"><label>Temperatura ambiente (°C)<select value={settings.temperature} onChange={e=>update('temperature',e.target.value)}><option value="">Selecione</option>{['10','15','20','25','30','35','40','45','50','55','60','65','70','75','80'].map(t=><option key={t} value={t}>{t} °C</option>)}</select></label><label>Disposição do agrupamento<select value={settings.groupMode} onChange={e=>update('groupMode',e.target.value)}><option value="bundle">Feixe ou conduto fechado (tabela 42, linha 1)</option>{settings.method==='C'&&<option value="singleLayer">Camada única sobre parede/piso (linha 2)</option>}</select></label></div>
@@ -676,15 +679,36 @@ type FeederForm={demandFactor:string;length:string;voltage:string;powerFactor:st
 const feederDefault:FeederForm={demandFactor:'1',length:'15',voltage:'',powerFactor:'',maxDrop:'4',groupCount:'1',neutralSection:'',breaker:'',notes:''};
 const feederBreakers=[10,16,20,25,32,40,50,63,80,100,125,160,200,225,250,315,400,500,630];
 const feederFormat=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:2});
-// Enquadramento indicativo extraído da tabela CELESC fornecida pelo usuário.
-// Não extrapolar para outras faixas, tensões, revisões ou trechos sem conferência da norma oficial.
-const celescEntryReference='Tabela de dimensionamento CELESC apresentada no projeto — confirmar edição vigente e notas aplicáveis';
-type CelescEntry={category:string;breakerIEC:number;entryPVC:number;entryXLPE:number;range:string};
-function celescEntryClassification(supply:string,installedKW:number):CelescEntry|null{
- if(supply!=='two'||!Number.isFinite(installedKW))return null;
- if(installedKW>15&&installedKW<=20)return {category:'B1',breakerIEC:50,entryPVC:10,entryXLPE:10,range:'15 < C ≤ 20 kW'};
- if(installedKW>20&&installedKW<=25)return {category:'B2',breakerIEC:63,entryPVC:16,entryXLPE:10,range:'20 < C ≤ 25 kW'};
- return null;
+// CELESC N-321.0001, edição dezembro/2025, seção 5.3.2 e Tabela 01.
+// Classificação preliminar por carga instalada para rede 220/380 V.
+// Não inferir o padrão construtivo, demanda, disponibilidade de rede ou atendimento aprovado.
+const celescEntryReference='CELESC N-321.0001 — dezembro/2025, item 5.3.2 e Tabela 01 (confirmar notas e condições locais)';
+type CelescEntry={category:string;breakerIEC:number|null;entryPVC:number|null;entryXLPE:number|null;range:string;supply:string;notes:string};
+function celescEntryClassification(installedKW:number,voltageFN:number,voltageFF:number):CelescEntry|null{
+ if(!(installedKW>0&&installedKW<=75)||Math.abs(voltageFN-220)>5||Math.abs(voltageFF-380)>8)return null;
+ const data:[number,string,string,number|null,string][]=[
+  [11,'A1','single',50,'C ≤ 11 kW'],[13,'A2','single',63,'11 < C ≤ 13 kW'],
+  [20,'B1','two',50,'13 < C ≤ 20 kW'],[25,'B2','two',63,'20 < C ≤ 25 kW'],
+  [30,'C1','three',50,'25 < C ≤ 30 kW'],[42,'C2','three',63,'30 < C ≤ 42 kW'],
+  [50,'C3','three',80,'42 < C ≤ 50 kW'],[65,'C4','three',100,'50 < C ≤ 65 kW'],
+  [75,'C5','three',125,'65 < C ≤ 75 kW']];
+ const row=data.find(([max])=>installedKW<=max+1e-9);
+ if(!row)return null;
+ const [,category,supply,breakerIEC,range]=row;
+ // A Tabela 01 possui diferentes colunas para cada trecho e tipo de cabo.
+ // Não apresentar bitola de ramal como PVC70 nem confundi-la com medição–QD.
+ return {category,supply,breakerIEC,entryPVC:null,entryXLPE:null,range,notes:'Indicação por carga instalada. Conferir equipamentos bifásicos/trifásicos, demanda quando exigida, ramais e condições de rede.'};
+}
+type AutomaticSupplyResult={entry:CelescEntry|null;installedKW:number;supply:string|null;tripolar:boolean;requiresTechnicalReview:boolean;reason:string};
+function celescAutomaticSupply(circuits:SavedCircuit[],settings:InstallationSettings):AutomaticSupplyResult{
+ const kw=circuits.reduce((total,c)=>total+(Number(c.data.power)||0),0)/1000;
+ const entry=celescEntryClassification(kw,Number(settings.voltageFN),Number(settings.voltageFF));
+ const tripolar=circuits.some(c=>Number(c.data.panelPoles||c.data.poles||c.data.results?.poles)===3);
+ // Um circuito tripolar exige três fases; a categoria por carga instalada não é alterada artificialmente.
+ // A incompatibilidade deve permanecer explícita e bloquear a aprovação do alimentador.
+ const requiresTechnicalReview=Boolean(tripolar&&entry&&entry.supply!=='three');
+ return {entry,installedKW:kw,supply:entry?(requiresTechnicalReview?'three':entry.supply):null,tripolar,requiresTechnicalReview,
+  reason:requiresTechnicalReview?'Circuito tripolar requer fornecimento trifásico, mas a faixa de carga instalada indica '+entry?.category+'. Confirmar enquadramento e aprovação com a CELESC.':''};
 }
 
 function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
@@ -712,7 +736,8 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  // A tabela CELESC usa carga instalada C em kW. Não usar a demanda reduzida do QD.
  // Potência do circuito é tratada pelo cadastro como W; verificar dados de placa/fator de potência.
  const installedKW=circuits.reduce((total,c)=>total+(Number(c.data.power)||0),0)/1000;
- const celescEntry=(Math.abs(voltageFN-220)<=5&&Math.abs(voltageFF-380)<=8)?celescEntryClassification(settings.supply,installedKW):null;
+ const automaticEntry=celescAutomaticSupply(circuits,settings);
+ const celescEntry=automaticEntry.entry;
 
  const autoResidential=automaticResidentialFactors(circuits,applianceEntries);
  const selectedFactors=demandMode==='external_table'?autoResidential.factors:groupFactors;
@@ -746,6 +771,9 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const table=ampacity5410[insulation]?.[material]?.[method]?.[loaded];
  const ft=temperature5410[insulation]?.[settings.temperature],fg=grouping5410[settings.groupMode]?.[settings.groupCount];
  const errors:string[]=[];
+ if(!celescEntry)errors.push('Enquadramento CELESC não determinado: confirme carga instalada e tensões antes de validar o alimentador.');
+ if(automaticEntry.requiresTechnicalReview)errors.push(automaticEntry.reason);
+ if(celescEntry&&settings.supply!==automaticEntry.supply)errors.push('Fornecimento diverge da proposta automática: revise as cargas e o quadro.');
  if(!voltageConfirmed)errors.push('Informe VFN e VFF válidas no Tipo de instalação para validar o alimentador multifásico.');
  if(settings.supply!=='single'&&voltageConfirmed&&Math.abs(voltageFF/voltageFN-Math.sqrt(3))>0.08)errors.push('Relação VFF/VFN incompatível com o modelo de fases defasadas de 120°. Revise o fornecimento.');
  if(circuits.some(c=>!(feederCircuitElectrical(c,settings).current>0)))errors.push('Existem circuitos sem corrente de projeto válida; revise o dimensionamento dos circuitos.');
@@ -829,6 +857,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  }
  return <section className="panel sizing-form"><h2>Alimentador geral do quadro de distribuição</h2>
  <p className="hint">A EletriPro utiliza automaticamente os circuitos e os parâmetros de Tipo de instalação. O disjuntor indicado é o do quadro de distribuição, não o da caixa de medição.</p>
+ {!celescEntry&&<p className="hint" role="alert">Sem classificação automática CELESC para esta carga/tensão. Não valide o alimentador até confirmar o fornecimento.</p>}
  <p className="hint"><strong>Composição do alimentador (fornecimento da concessionária): {feederTopology}.</strong> O campo ‘Composição dos condutores’ do cadastro de instalação se aplica aos circuitos internos e não altera a topologia do alimentador. A presença do neutro deve ser confirmada no padrão de fornecimento real.</p>
  <p className="hint" role="note">Tensão dos circuitos cadastrada: {fmt(voltage)} V. Alimentação: VFN {voltageFN>0?fmt(voltageFN):"não informada"} V; VFF {voltageFF>0?fmt(voltageFF):"não informada"} V. Os circuitos existentes não são convertidos automaticamente. Confira a tensão e a ligação de cada circuito antes do projeto executivo.</p>
  {loading?<p>Carregando circuitos...</p>:<>
@@ -840,10 +869,10 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
   <div><span>Carga instalada considerada</span><strong>{fmt(installedKW)} kW</strong></div>
   <div><span>Categoria CELESC</span><strong>{celescEntry?.category||'Não determinada'}</strong></div>
   <div><span>Disjuntor IEC/DIN do padrão</span><strong>{celescEntry?celescEntry.breakerIEC+' A':'—'}</strong></div>
-  <div><span>Ramal de entrada cobre PVC 70 °C</span><strong>{celescEntry?celescEntry.entryPVC+' mm²':'—'}</strong></div>
-  <div><span>Ramal de entrada cobre XLPE/EPR 90 °C</span><strong>{celescEntry?celescEntry.entryXLPE+' mm²':'—'}</strong></div>
+  <div><span>Ramal de entrada</span><strong>Conferir Tabela 01</strong></div>
+  <div><span>Fornecimento proposto</span><strong>{celescEntry?(celescEntry.supply==='single'?'Monofásico':celescEntry.supply==='two'?'Bifásico':'Trifásico'):'—'}</strong></div>
  </div>
- {celescEntry?<p className="hint">Faixa: {celescEntry.range}. Os cabos indicados são os da coluna <strong>ramal de entrada</strong> da tabela apresentada, não os do trecho medição–QD. Disjuntor do padrão: {celescEntry.breakerIEC} A; disjuntor do QD: {chosen?chosen.breaker+' A':'a dimensionar'}.</p>:<p className="hint" role="status">A tabela conferida nesta implementação cobre apenas as faixas B1 e B2 de fornecimento bifásico 220/380 V. Para outros enquadramentos, consulte a tabela oficial completa; não há seleção automática presumida.</p>}
+ {celescEntry?<p className="hint">Faixa: {celescEntry.range}. A seção dos ramais deve ser conferida na coluna apropriada da Tabela 01; não é a seção do alimentador interno. Disjuntor do padrão: {celescEntry.breakerIEC} A; disjuntor do QD: {chosen?chosen.breaker+' A':'a dimensionar'}.</p>:<p className="hint" role="status">Classificação indisponível para as tensões/cargas informadas ou fora do limite de 75 kW. Confirme a rede e a norma aplicável.</p>}
  </div>
  <h3>Alimentador interno — medição até QD (NBR 5410)</h3>
  <div className="ep-summary-grid">
@@ -1329,7 +1358,7 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
  const [activeClientId,setActiveClientId]=useState<string|null>(null);
  const [clientAreaTab,setClientAreaTab]=useState('Tipo de instalação');
  const budgetLoadedFor=React.useRef<string|null>(null);
- const clientAreaTabs=['Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Alimentador geral','Materiais/Orçamentos','Relatórios'];
+ const clientAreaTabs=['Tipo de instalação','Ambientes','Dimensionamento','Quadro de distribuição','Alimentador geral','Materiais/Orçamentos','Relatórios'];
  const clientAreaOpen=clientAreaTabs.includes(tab);
  const activeClient=clients.find(c=>c.id===activeClientId);
  const clientStorageKey=(suffix:string)=>`eletripro-client-${session?.user?.id||'anon'}-${activeClientId||'none'}-${suffix}`;
@@ -1337,6 +1366,18 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
  const [manualDescription,setManualDescription]=useState(''),[manualUnit,setManualUnit]=useState('un'),[manualQty,setManualQty]=useState('1'),[manualPrice,setManualPrice]=useState('0');
  const addManualBudgetItem=()=>{const desc=manualDescription.trim();const qty=Number(manualQty),price=Number(manualPrice);if(!desc||!Number.isFinite(qty)||qty<=0||!Number.isFinite(price)||price<0)return;setBudgetItems(old=>[...old,{id:'manual-'+Date.now()+'-'+Math.random().toString(36).slice(2),description:desc,unit:manualUnit,quantity:qty,unitPrice:price}]);setManualDescription('');setManualQty('1');setManualPrice('0')};
  const [installationSettings,setInstallationSettings]=useState<InstallationSettings>(readInstallation);
+ const [supplyCircuits,setSupplyCircuits]=useState<SavedCircuit[]>([]);
+ const [supplyLoaded,setSupplyLoaded]=useState(false);
+ const autoSupply=celescAutomaticSupply(supplyCircuits,installationSettings);
+ const effectiveInstallation:InstallationSettings=autoSupply.supply?{...installationSettings,supply:autoSupply.supply}:installationSettings;
+ const supplyReady=supplyLoaded&&Boolean(autoSupply.supply)&&!autoSupply.requiresTechnicalReview;
+ const supplyRevision=supplyCircuits.map(c=>[c.id,c.data.power,c.data.panelPoles,c.data.poles,c.data.results?.poles].join(':')).sort().join('|')+'-'+autoSupply.supply;
+ useEffect(()=>{let active=true;setSupplyLoaded(false);setSupplyCircuits([]);
+  if(!activeClientId||!session?.user?.id||!supabase)return;
+  void(async()=>{try{const id=await ensureEletriProject(activeClientId,session.user.id);const r=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id);if(active){if(r.error){setSupplyCircuits([]);setMsg('Erro ao atualizar os circuitos: '+r.error.message)}else setSupplyCircuits((r.data||[]) as SavedCircuit[])}}finally{if(active)setSupplyLoaded(true)}})();
+  return()=>{active=false};
+ },[activeClientId,session?.user?.id,tab]);
+
   const [installationLoading,setInstallationLoading]=useState(false);
   const [installationSaving,setInstallationSaving]=useState(false);
   const [installationStatus,setInstallationStatus]=useState('');
@@ -1462,12 +1503,12 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Meu Perfil'&&<form className="panel form profile-form" onSubmit={saveProfile}><h2>Meus dados</h2><p>Dados pessoais vinculados à sua conta. A confirmação do e-mail é gerenciada pelo Supabase.</p><label>E-mail<input type="email" value={session.user.email||''} disabled/></label><label>Nome completo<input value={fullName} onChange={e=>setFullName(e.target.value)}/></label><div className="two"><label>CPF<input inputMode="numeric" value={cpf} onChange={e=>setCpf(e.target.value.replace(/\D/g,'').slice(0,11))}/></label><label>Nascimento<input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></label></div><label>Telefone celular<input type="tel" inputMode="tel" placeholder="(48) 99999-9999" value={mobile} onChange={e=>setMobile(formatMobile(e.target.value))}/></label><h2>Endereço</h2><label>Rua / avenida<input value={street} onChange={e=>setStreet(e.target.value)}/></label><div className="two"><label>Número<input value={number} onChange={e=>setNumber(e.target.value)}/></label><label>Complemento<input value={complement} onChange={e=>setComplement(e.target.value)}/></label></div><label>Bairro<input value={neighborhood} onChange={e=>setNeighborhood(e.target.value)}/></label><div className="two"><label>Cidade<input value={city} onChange={e=>setCity(e.target.value)}/></label><label>Estado<select value={state} onChange={e=>setState(e.target.value)}><option value="">Selecione</option>{statesBR.map(st=><option key={st} value={st}>{st}</option>)}</select></label></div><p className="hint">Envio de documento com foto e troca de senha serão disponibilizados após a validação do fluxo de segurança.</p><button className="primary" type="submit" disabled={loading||!profileLoaded}>Salvar meus dados</button></form>}
 {tab==='Assinatura'&&<section className="panel subscription"><Crown size={32}/><h2>EletriPro Pro</h2><p>Assinatura anual com clientes ilimitados e recursos profissionais.</p><strong>Valor a definir</strong><button className="primary" disabled>Pagamento Pix em preparação</button><small>O acesso Pro só será ativado após confirmação segura do pagamento pelo Mercado Pago.</small></section>}
 {clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div></section>}
-{tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation} onSave={()=>void saveInstallation()} saving={installationLoading||installationSaving}/>{installationStatus&&installationStatus.startsWith("Erro")&&<p className="hint" role="alert">{installationStatus}</p>}</>}
-{tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
-{tab==='Alimentador geral'&&activeClient&&<FeederPanel key={'feeder-'+activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
-{tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
+{tab==='Tipo de instalação'&&activeClient&&<><section className="panel"><h3>Fornecimento CELESC — proposta automática</h3><p>{!supplyLoaded?'Calculando após carregar circuitos...':!supplyCircuits.length?'Cadastre ambientes e circuitos para obter o fornecimento.':autoSupply.entry?`${autoSupply.installedKW.toLocaleString('pt-BR',{maximumFractionDigits:2})} kW instalados · ${autoSupply.entry.category} · ${autoSupply.supply==='three'?'Trifásico':autoSupply.supply==='two'?'Bifásico':'Monofásico'} (proposta)`: 'Sem enquadramento automático: confirme tensão 220/380 V, carga e condições da rede.'}</p>{autoSupply.requiresTechnicalReview&&<p role="alert" className="sizing-warning">{autoSupply.reason} O QD e o alimentador ficam bloqueados até a revisão.</p>}<p className="hint">A proposta não comprova disponibilidade da rede, ligação de equipamentos especiais nem aprovação da concessionária. A mudança de fornecimento exige revisar o QD.</p></section><InstallationSetup settings={installationSettings} onChange={updateInstallation} onSave={()=>void saveInstallation()} saving={installationLoading||installationSaving}/>{installationStatus&&installationStatus.startsWith("Erro")&&<p className="hint" role="alert">{installationStatus}</p>}</>}
+{tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={effectiveInstallation}/>}
+{tab==='Alimentador geral'&&activeClient&&(supplyReady?<FeederPanel key={'feeder-'+activeClientId+'-'+supplyRevision} clientId={activeClientId!} userId={session.user.id} settings={effectiveInstallation}/>:<section className="panel" role="alert"><h3>Alimentador aguardando enquadramento</h3><p>{!supplyLoaded?'Atualizando circuitos...':autoSupply.reason||'Não há fornecimento CELESC válido para os circuitos e tensões cadastrados. Revise as cargas e as tensões antes de dimensionar.'}</p></section>)}
+{tab==='Quadro de distribuição'&&activeClient&&(supplyReady?<DistributionPanel key={activeClientId+'-'+supplyRevision} clientId={activeClientId!} userId={session.user.id} settings={effectiveInstallation}/>:<section className="panel" role="alert"><h3>Quadro aguardando enquadramento</h3><p>{!supplyLoaded?'Atualizando circuitos...':autoSupply.reason||'Cadastre circuitos e tensões válidas para obter o fornecimento automático antes de distribuir as fases.'}</p></section>)}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
-{tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} logo={logo} accent={accent} settings={installationSettings}/>}
+{tab==='Relatórios'&&activeClient&&(supplyReady?<TechnicalReport key={'report-'+activeClientId+'-'+supplyRevision} client={activeClient} userId={session.user.id} professional={professional} logo={logo} accent={accent} settings={effectiveInstallation}/>:<section className="panel" role="alert">Relatório técnico bloqueado: fornecimento automático não validado. {autoSupply.reason}</section>)}
 {tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems} client={activeClient} professional={professional} logo={logo} accent={accent}/></div>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
