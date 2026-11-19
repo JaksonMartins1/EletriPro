@@ -429,6 +429,23 @@ const normalizeDemandFactors=(input:unknown):Record<DemandCategory,number>=>{
  return Object.fromEntries(demandCategories.map(k=>{const v=Number(raw[k]);return [k,Number.isFinite(v)&&v>0&&v<=1?v:1]})) as Record<DemandCategory,number>;
 };
 
+// Subclassificação informativa dos equipamentos. Não atribui fatores de simultaneidade sem metodologia aprovada.
+type DemandGroup='lighting'|'tug_wet'|'tug_other'|'shower'|'electric_tap'|'cooking'|'air_conditioning'|'other_tue'|'other';
+const demandGroupLabels:Record<DemandGroup,string>={lighting:'Iluminação',tug_wet:'TUG — cozinha/serviço',tug_other:'TUG — demais ambientes',shower:'Chuveiros elétricos',electric_tap:'Torneiras elétricas',cooking:'Cocção elétrica',air_conditioning:'Ar-condicionado',other_tue:'Outras TUE',other:'Outras cargas'};
+const demandGroupOrder:DemandGroup[]=['lighting','tug_wet','tug_other','shower','electric_tap','cooking','air_conditioning','other_tue','other'];
+const demandGroup=(row:SavedCircuit):DemandGroup=>{
+ const kind=demandCategory(row),name=String(row.title||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+ if(kind==='lighting')return 'lighting';
+ if(kind==='tug')return /cozinha|lavanderia|area de servico|servico|copa/.test(name)?'tug_wet':'tug_other';
+ if(kind==='tue'){
+  if(/chuveiro|ducha/.test(name))return 'shower';
+  if(/torneira/.test(name))return 'electric_tap';
+  if(/fogao|cooktop|forno|inducao/.test(name))return 'cooking';
+  if(/ar condicionado|ar-condicionado|split|climatiz/.test(name))return 'air_conditioning';
+  return 'other_tue';
+ }
+ return 'other';
+};
 // Auditoria de demanda: classificação e potência aparente por circuito, sem inventar coeficientes normativos.
 const demandCircuitVA=(row:SavedCircuit,defaultPf:number)=>{
  const va=Number(row.data.powerVA);
@@ -530,7 +547,8 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const sumPower=circuits.reduce((a,c)=>a+(Number(c.data.power)||0),0);
  const sumVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf),0);
  const demandedVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf)*circuitDemandFactor(c,demandFactors),0);
- const demandAudit=circuits.map(c=>({c,category:demandCategory(c),va:demandCircuitVA(c,pf),issues:demandCircuitIssues(c,pf)}));
+ const demandAudit=circuits.map(c=>({c,category:demandCategory(c),group:demandGroup(c),va:demandCircuitVA(c,pf),issues:demandCircuitIssues(c,pf)}));
+ const groupTotals=demandGroupOrder.map(group=>({group,items:demandAudit.filter(x=>x.group===group)})).filter(x=>x.items.length>0);
  const demandTotals=Object.fromEntries(demandCategories.map(k=>[k,demandAudit.filter(x=>x.category===k).reduce((a,x)=>a+x.va,0)])) as Record<DemandCategory,number>;
  const auditIssues=demandAudit.flatMap(x=>x.issues.map(issue=>`${x.c.title}: ${issue}`));
  const demand=sumVA>0?demandedVA/sumVA:1; // Sem base de demanda validada, 100% da carga. Não inventar fator redutor.
@@ -586,7 +604,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  <button type="button" className="secondary" onClick={()=>setDetails(v=>!v)}>{details?'Ocultar memória de cálculo':'Mostrar memória de cálculo'}</button>
  {details&&<div className="panel"><h3>Auditoria automática das cargas</h3><p className="hint">A EletriPro identifica o tipo e a potência aparente de cada circuito. Os ambientes vinculados alimentam os circuitos, mas não são somados novamente, evitando dupla contagem. A auditoria não atribui fatores redutores sem referência técnica.</p>
  <div className="ep-summary-grid">{demandCategories.map(k=><div key={k}><span>{demandLabels[k]}</span><strong>{fmt(demandTotals[k])} VA</strong><small>{demandAudit.filter(x=>x.category===k).length} circuito(s)</small></div>)}</div>
- <div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Categoria</th><th>Potência (VA)</th><th>Fator</th><th>Demanda (VA)</th><th>Origem</th></tr></thead><tbody>{demandAudit.map(({c,category,va})=><tr key={c.id}><td>{c.title}</td><td>{demandLabels[category]}</td><td>{fmt(va)}</td><td>{fmt(demandFactors[category])}</td><td>{fmt(va*demandFactors[category])}</td><td>{demandCircuitSource(c)}</td></tr>)}</tbody></table></div>
+ <h4>Equipamentos identificados automaticamente</h4><div style={{overflowX:'auto'}}><table><thead><tr><th>Grupo de carga</th><th>Circuitos</th><th>Potência (VA)</th><th>Demanda considerada (VA)</th></tr></thead><tbody>{groupTotals.map(({group,items})=><tr key={group}><td>{demandGroupLabels[group]}</td><td>{items.length}</td><td>{fmt(items.reduce((a,x)=>a+x.va,0))}</td><td>{fmt(items.reduce((a,x)=>a+x.va*demandFactors[x.category],0))}</td></tr>)}</tbody></table></div><p className="hint">A identificação dos equipamentos usa o nome e o tipo dos circuitos. Confira as classificações abaixo; títulos genéricos podem exigir revisão. Não há redução automática de demanda sem metodologia documentada.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Categoria</th><th>Equipamento identificado</th><th>Potência (VA)</th><th>Fator</th><th>Demanda (VA)</th><th>Origem</th></tr></thead><tbody>{demandAudit.map(({c,category,group,va})=><tr key={c.id}><td>{c.title}</td><td>{demandLabels[category]}</td><td>{demandGroupLabels[group]}</td><td>{fmt(va)}</td><td>{fmt(demandFactors[category])}</td><td>{fmt(va*demandFactors[category])}</td><td>{demandCircuitSource(c)}</td></tr>)}</tbody></table></div>
  {auditIssues.length>0?<div><strong>Pendências de cadastro</strong>{auditIssues.map((issue,i)=><p className="hint" key={i}>{issue}</p>)}</div>:<p className="hint">Todos os circuitos possuem categoria reconhecida e potência aparente disponível.</p>}
  </div>}
  {details&&<div className="panel"><h3>Critérios de demanda (configuração técnica)</h3><p className="hint">O padrão é 100% em todas as categorias. Só informe fator inferior a 1 quando houver critério técnico documentado para o projeto. A EletriPro não presume percentuais normativos.</p><div className="two">{demandCategories.map(k=><label key={k}>{demandLabels[k]} — fator (0 a 1)<input type="number" min="0.01" max="1" step="0.01" value={demandFactors[k]} onChange={e=>{const v=Number(e.target.value);setDemandFactors(old=>({...old,[k]:v}));setMessage('')}}/></label>)}</div><label>Referência técnica / justificativa dos fatores<input value={demandJustification} onChange={e=>setDemandJustification(e.target.value)} placeholder="Ex.: norma da concessionária, tabela e edição"/></label></div>}
