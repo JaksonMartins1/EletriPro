@@ -433,6 +433,9 @@ const normalizeDemandFactors=(input:unknown):Record<DemandCategory,number>=>{
 type DemandGroup='lighting'|'tug_wet'|'tug_other'|'shower'|'electric_tap'|'cooking'|'air_conditioning'|'other_tue'|'other';
 const demandGroupLabels:Record<DemandGroup,string>={lighting:'Iluminação',tug_wet:'TUG — cozinha/serviço',tug_other:'TUG — demais ambientes',shower:'Chuveiros elétricos',electric_tap:'Torneiras elétricas',cooking:'Cocção elétrica',air_conditioning:'Ar-condicionado',other_tue:'Outras TUE',other:'Outras cargas'};
 const demandGroupOrder:DemandGroup[]=['lighting','tug_wet','tug_other','shower','electric_tap','cooking','air_conditioning','other_tue','other'];
+const defaultGroupFactors=Object.fromEntries(demandGroupOrder.map(k=>[k,1])) as Record<DemandGroup,number>;
+const normalizeGroupFactors=(raw:unknown)=>{const data=(raw&&typeof raw==='object'?raw:{}) as Record<string,unknown>;return Object.fromEntries(demandGroupOrder.map(k=>{const v=Number(data[k]);return [k,Number.isFinite(v)&&v>0&&v<=1?v:1]})) as Record<DemandGroup,number>};
+const groupDemandFactor=(row:SavedCircuit,factors:Record<DemandGroup,number>)=>factors[demandGroup(row)];
 const demandGroup=(row:SavedCircuit):DemandGroup=>{
  const kind=demandCategory(row),name=String(row.title||'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
  if(kind==='lighting')return 'lighting';
@@ -468,6 +471,58 @@ const panelPoles=(row:SavedCircuit,settings:InstallationSettings)=>{
  const wiring=String(row.data.wiring||settings.wiring);
  return wiring==='three'?3:wiring==='phase-phase'?2:1;
 };
+// Soma fasorial das correntes dos condutores: cargas FN, FF e trifásicas equilibradas.
+// Atribui-se a cada circuito seu próprio fator de potência quando cadastrado.
+// Em falta de FP individual, utiliza-se o FP geral. Correntes harmônicas não são modeladas.
+type ComplexCurrent={re:number;im:number};
+const phaseVectors=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
+ const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
+ const angles:Record<string,number>={A:0,B:-2*Math.PI/3,C:2*Math.PI/3};
+ // Em sistema bifásico de duas fases da rede trifásica, A/B têm 120° entre si.
+ const vectors:Record<string,ComplexCurrent>=Object.fromEntries(phases.map(p=>[p,{re:0,im:0}]));
+ const add=(p:string,amp:number,angle:number)=>{if(!vectors[p])return;vectors[p].re+=amp*Math.cos(angle);vectors[p].im+=amp*Math.sin(angle)};
+ for(const row of rows){
+  const choices=panelChoices(settings,panelPoles(row,settings));
+  const stored=String(row.data.panelConnection||row.data.panelPhase||'');
+  const connection=choices.includes(stored as PanelConnection)?stored:choices[0];
+  const current=panelCurrent(row)*factor(row);
+  const pfRaw=Number(row.data.pf||settings.powerFactor);
+  const pf=Number.isFinite(pfRaw)&&pfRaw>0&&pfRaw<=1?pfRaw:1;
+  const lag=Math.acos(pf);
+  if(connection.length===1){add(connection,current,angles[connection]-lag);continue}
+  if(connection.length===3){for(const phase of connection)add(phase,current,angles[phase]-lag);continue}
+  const [first,second]=connection.split('');
+  // Tensão entre fases Vfirst-Vsecond; corrente entra pela primeira e retorna pela segunda.
+  const va={re:Math.cos(angles[first]),im:Math.sin(angles[first])};
+  const vb={re:Math.cos(angles[second]),im:Math.sin(angles[second])};
+  const angle=Math.atan2(va.im-vb.im,va.re-vb.re)-lag;
+  add(first,current,angle);add(second,current,angle+Math.PI);
+ }
+ return vectors;
+};
+const phaseCurrents=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
+ const vectors=phaseVectors(rows,settings,factor);
+ return Object.fromEntries(Object.entries(vectors).map(([p,v])=>[p,Math.hypot(v.re,v.im)])) as Record<string,number>;
+};
+// Limite superior conservador: soma dos módulos das correntes em cada condutor.
+// Evita reduzir a seção do alimentador apenas por cancelamentos fasoriais presumidos.
+const phaseCurrentUpperBounds=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
+ const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
+ const totals:Record<string,number>=Object.fromEntries(phases.map(p=>[p,0]));
+ for(const row of rows){
+  const choices=panelChoices(settings,panelPoles(row,settings));
+  const stored=String(row.data.panelConnection||row.data.panelPhase||'');
+  const connection=choices.includes(stored as PanelConnection)?stored:choices[0];
+  const current=panelCurrent(row)*factor(row);
+  for(const p of connection){if(p in totals)totals[p]+=current;}
+ }
+ return totals;
+};
+const neutralCurrent=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
+ const vectors=phaseVectors(rows,settings,factor);
+ const sum=Object.values(vectors).reduce((v,c)=>({re:v.re+c.re,im:v.im+c.im}),{re:0,im:0});
+ return Math.hypot(sum.re,sum.im);
+};
 const panelChoices=(settings:InstallationSettings,poles:number):PanelConnection[]=>{
  if(settings.supply==='single')return ['A'];
  if(settings.supply==='two')return poles===2?['AB']:['A','B'];
@@ -476,8 +531,9 @@ const panelChoices=(settings:InstallationSettings,poles:number):PanelConnection[
 function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
  const [rows,setRows]=useState<SavedCircuit[]>([]),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
  const [projectId,setProjectId]=useState('');
- const [demandFactors,setDemandFactors]=useState<Record<DemandCategory,number>>(defaultDemandFactors);
- useEffect(()=>{let live=true;void(async()=>{try{const id=await ensureEletriProject(clientId,userId);if(!supabase)return;const [r,pr]=await Promise.all([supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}),supabase.from('eletripro_projects').select('installation').eq('id',id).single()]);if(r.error)throw r.error;if(pr.error)throw pr.error;if(live){setRows((r.data||[]) as SavedCircuit[]);setProjectId(id);setDemandFactors(normalizeDemandFactors(pr.data?.installation?.demandFactors))}}catch(e){if(live)setMessage('Erro ao carregar quadro: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
+ const [groupFactors,setGroupFactors]=useState<Record<DemandGroup,number>>(defaultGroupFactors);
+ const [demandMode,setDemandMode]=useState<'conservative'|'documented'>('conservative');
+ useEffect(()=>{let live=true;void(async()=>{try{const id=await ensureEletriProject(clientId,userId);if(!supabase)return;const [r,pr]=await Promise.all([supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}),supabase.from('eletripro_projects').select('installation').eq('id',id).single()]);if(r.error)throw r.error;if(pr.error)throw pr.error;if(live){setRows((r.data||[]) as SavedCircuit[]);setProjectId(id);setGroupFactors(normalizeGroupFactors(pr.data?.installation?.demandGroupFactors));setDemandMode(pr.data?.installation?.demandMode==='documented'?'documented':'conservative')}}catch(e){if(live)setMessage('Erro ao carregar quadro: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
  const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
  const optionsFor=(row:SavedCircuit)=>panelChoices(settings,panelPoles(row,settings));
  const connectionFor=(row:SavedCircuit):PanelConnection=>{
@@ -498,19 +554,20 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
   setRows(next);if(updated===changes.length)setMessage(updated===1?'Circuito atualizado.':`${updated} circuitos atualizados.`);setBusy(false);
  }
  const sums=Object.fromEntries(phases.map(p=>[p,rows.reduce((n,row)=>n+(connectionFor(row).includes(p)?panelCurrent(row):0),0)])) as Record<string,number>;
- const demandSums=Object.fromEntries(phases.map(p=>[p,rows.reduce((n,row)=>n+(connectionFor(row).includes(p)?circuitDemandCurrent(row,demandFactors):0),0)])) as Record<string,number>;
+ const factorFor=(row:SavedCircuit)=>demandMode==='documented'?groupDemandFactor(row,groupFactors):1;
+ const demandSums=phaseCurrents(rows,settings,factorFor);
  const balance=()=>{
   if(busy||!rows.length)return;
   const loads=Object.fromEntries(phases.map(p=>[p,0])) as Record<string,number>;
   const assigned=new Map<string,PanelConnection>();
   // Cargas multipolares são mantidas na ligação válida e entram em cada fase envolvida.
-  rows.filter(row=>optionsFor(row).length===1).forEach(row=>{const conn=connectionFor(row);assigned.set(row.id,conn);for(const p of phases)if(conn.includes(p))loads[p]+=circuitDemandCurrent(row,demandFactors)});
-  rows.filter(row=>optionsFor(row).length>1).sort((a,b)=>circuitDemandCurrent(b,demandFactors)-circuitDemandCurrent(a,demandFactors)).forEach(row=>{
+  rows.filter(row=>optionsFor(row).length===1).forEach(row=>{const conn=connectionFor(row);assigned.set(row.id,conn);for(const p of phases)if(conn.includes(p))loads[p]+=panelCurrent(row)*factorFor(row)});
+  rows.filter(row=>optionsFor(row).length>1).sort((a,b)=>panelCurrent(b)*factorFor(b)-panelCurrent(a)*factorFor(a)).forEach(row=>{
    const choices=optionsFor(row);const choice=[...choices].sort((a,b)=>{
-    const loadA=Math.max(...phases.filter(p=>a.includes(p)).map(p=>loads[p]+circuitDemandCurrent(row,demandFactors)));
-    const loadB=Math.max(...phases.filter(p=>b.includes(p)).map(p=>loads[p]+circuitDemandCurrent(row,demandFactors)));
+    const loadA=Math.max(...phases.filter(p=>a.includes(p)).map(p=>loads[p]+panelCurrent(row)*factorFor(row)));
+    const loadB=Math.max(...phases.filter(p=>b.includes(p)).map(p=>loads[p]+panelCurrent(row)*factorFor(row)));
     return loadA-loadB;
-   })[0];assigned.set(row.id,choice);for(const p of phases)if(choice.includes(p))loads[p]+=circuitDemandCurrent(row,demandFactors);
+   })[0];assigned.set(row.id,choice);for(const p of phases)if(choice.includes(p))loads[p]+=panelCurrent(row)*factorFor(row);
   });
   const changes=rows.filter(row=>assigned.get(row.id)!==connectionFor(row)).map(row=>({id:row.id,connection:assigned.get(row.id)!}));
   if(!changes.length){setMessage('Nenhuma alteração necessária para a distribuição automática.');return}
@@ -521,7 +578,7 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  <p className="hint">Confira a distribuição por fase. O balanceamento automático depende de confirmação para não alterar ligações físicas já definidas.</p>
  {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:<div className="ep-distribution-list">{rows.map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;const poles=panelPoles(row,settings);const choices=optionsFor(row);return <div className="ep-distribution-item ep-panel-circuit" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div className="ep-panel-circuit-info"><strong>{row.title}</strong><small>Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · {poles} {poles===1?'polo':'polos'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {panelCurrent(row)?`${numberBR(panelCurrent(row))} A`:'—'}</small></div><label>Fase(s)<select value={connectionFor(row)} disabled={busy||choices.length===1} onChange={e=>void persistChanges([{id:row.id,connection:e.target.value as PanelConnection}])}>{choices.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
  <h3 className="ep-panel-subtitle">Resumo por fase</h3><div className="ep-summary-grid">{phases.map(p=><div key={p}><span>Corrente instalada — fase {p}</span><strong>{numberBR(sums[p])} A</strong><small>Corrente demandada: {numberBR(demandSums[p])} A</small></div>)}</div>
- <p className="hint">Corrente demandada considera os fatores técnicos registrados no Alimentador geral. Sem justificativa de redução, todos os fatores permanecem em 100%. Circuitos bipolares e tripolares entram em cada fase envolvida. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p>{message&&<p role="status">{message}</p>}</section>;
+ <p className="hint">Corrente demandada considera os fatores técnicos registrados no Alimentador geral. Sem justificativa de redução, todos os fatores permanecem em 100%. Circuitos bipolares contribuem com correntes de retorno opostas e circuitos tripolares são considerados equilibrados. A soma fasorial considera o FP cadastrado. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p>{message&&<p role="status">{message}</p>}</section>;
 }
 
 
@@ -535,32 +592,41 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const [projectId,setProjectId]=useState('');
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[message,setMessage]=useState('');
  const [details,setDetails]=useState(false);
- const [demandFactors,setDemandFactors]=useState<Record<DemandCategory,number>>(defaultDemandFactors);
  const [demandJustification,setDemandJustification]=useState('');
+ const [groupFactors,setGroupFactors]=useState<Record<DemandGroup,number>>(defaultGroupFactors);
+ const [demandMode,setDemandMode]=useState<'conservative'|'documented'>('conservative');
  useEffect(()=>{let live=true;void(async()=>{try{
   const id=await ensureEletriProject(clientId,userId);
   const [pr,cr]=await Promise.all([supabase.from('eletripro_projects').select('installation').eq('id',id).single(),supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id)]);
   if(pr.error)throw pr.error;if(cr.error)throw cr.error;
-  if(live){setProjectId(id);setCircuits((cr.data||[]) as SavedCircuit[]);const previous=pr.data?.installation?.feeder;if(previous?.length)setLength(String(previous.length));const stored=pr.data?.installation?.demandFactors;if(stored&&typeof stored==='object'){setDemandFactors(normalizeDemandFactors(stored));setDemandJustification(String(pr.data?.installation?.demandJustification||''))}}
+  if(live){setProjectId(id);setCircuits((cr.data||[]) as SavedCircuit[]);const previous=pr.data?.installation?.feeder;if(previous?.length)setLength(String(previous.length));setGroupFactors(normalizeGroupFactors(pr.data?.installation?.demandGroupFactors));setDemandMode(pr.data?.installation?.demandMode==='documented'?'documented':'conservative');setDemandJustification(String(pr.data?.installation?.demandJustification||''))}
  }catch(e){if(live)setMessage('Falha ao carregar alimentador: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
  const len=Number(length),voltage=Number(settings.voltage),pf=Number(settings.powerFactor);
  const sumPower=circuits.reduce((a,c)=>a+(Number(c.data.power)||0),0);
  const sumVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf),0);
- const demandedVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf)*circuitDemandFactor(c,demandFactors),0);
+ const effectiveFactor=(c:SavedCircuit)=>demandMode==='documented'?groupDemandFactor(c,groupFactors):1;
+ const demandedVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf)*effectiveFactor(c),0);
  const demandAudit=circuits.map(c=>({c,category:demandCategory(c),group:demandGroup(c),va:demandCircuitVA(c,pf),issues:demandCircuitIssues(c,pf)}));
  const groupTotals=demandGroupOrder.map(group=>({group,items:demandAudit.filter(x=>x.group===group)})).filter(x=>x.items.length>0);
  const demandTotals=Object.fromEntries(demandCategories.map(k=>[k,demandAudit.filter(x=>x.category===k).reduce((a,x)=>a+x.va,0)])) as Record<DemandCategory,number>;
  const auditIssues=demandAudit.flatMap(x=>x.issues.map(issue=>`${x.c.title}: ${issue}`));
  const demand=sumVA>0?demandedVA/sumVA:1; // Sem base de demanda validada, 100% da carga. Não inventar fator redutor.
  const three=settings.supply==='three',loaded=three?'3':'2';
- const ib=demandedVA/(voltage*(three?Math.sqrt(3):1));
+ const phaseDemand=phaseCurrents(circuits,settings,effectiveFactor);
+ const phaseUpperBounds=phaseCurrentUpperBounds(circuits,settings,effectiveFactor);
+ // A demanda documentada permanece informativa até que a aplicabilidade da norma seja verificada.
+ // O dimensionamento automático NÃO pode ser reduzido por fatores manuais não validados.
+ const phaseSizingBounds=phaseCurrentUpperBounds(circuits,settings,()=>1);
+ const ib=Math.max(0,...Object.values(phaseSizingBounds));
+ const neutralIb=Math.max(neutralCurrent(circuits,settings,()=>1),...Object.values(phaseSizingBounds));
  const method=settings.method,material=settings.conductorMaterial,insulation=settings.conductorInsulation;
  const table=ampacity5410[insulation]?.[material]?.[method]?.[loaded];
  const ft=temperature5410[insulation]?.[settings.temperature],fg=grouping5410[settings.groupMode]?.[settings.groupCount];
  const errors:string[]=[];
- if(demandCategories.some(k=>!Number.isFinite(demandFactors[k])||demandFactors[k]<=0||demandFactors[k]>1))errors.push('Fatores de demanda devem estar entre 0 e 1.');
- const reducedDemand=demandCategories.some(k=>demandFactors[k]<1);
- if(reducedDemand&&!demandJustification.trim())errors.push('Informe a referência técnica dos fatores de demanda reduzidos na memória de cálculo.');
+ if(circuits.some(c=>!(panelCurrent(c)>0)))errors.push('Existem circuitos sem corrente de projeto válida; revise o dimensionamento dos circuitos.');
+ const reducedDemand=demandMode==='documented'&&demandGroupOrder.some(k=>groupFactors[k]<1);
+ if(demandMode==='documented'&&demandGroupOrder.some(k=>!(groupFactors[k]>0&&groupFactors[k]<=1)))errors.push('Os fatores por grupo devem estar entre 0 e 1.');
+ if(reducedDemand&&demandJustification.trim().length<12)errors.push('Informe a referência técnica dos fatores de demanda reduzidos na memória de cálculo.');
  if(!circuits.length)errors.push('Cadastre os circuitos terminais antes de dimensionar o alimentador.');
  if(auditIssues.length)errors.push('Existem pendências na auditoria de cargas. Consulte a memória de cálculo.');
  if(circuits.some(c=>!(Number(c.data.power)>0)))errors.push('Há circuitos sem potência válida.');
@@ -568,17 +634,47 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  if(!(len>0&&Number.isFinite(len)))errors.push('Informe uma distância positiva em metros.');
  if(!table||ft===undefined||fg===undefined)errors.push('Revise método de instalação, temperatura e agrupamento em Tipo de instalação.');
  if(material==='aluminum')errors.push('Dimensionamento automático de alumínio indisponível; requer validação técnica.');
+ if(settings.supply!=='three'&&circuits.some(c=>panelPoles(c,settings)===3))errors.push('Existem circuitos tripolares em alimentação não trifásica; revise as ligações.');
+ if(settings.supply==='single'&&circuits.some(c=>panelPoles(c,settings)===2))errors.push('Existem circuitos bipolares em alimentação monofásica; revise as ligações.');
+ // Etapa G: auditoria de conexões e proteções antes de autorizar o salvamento.
+ // A seleção visual de uma fase não substitui o registro de uma ligação elétrica válida.
+ for(const c of circuits){
+  const poles=panelPoles(c,settings);
+  const choices=panelChoices(settings,poles);
+  const stored=String(c.data.panelConnection||c.data.panelPhase||'');
+  if(!stored)errors.push(`${c.title}: ligação de fase não confirmada no quadro de distribuição; atribua a ligação antes de dimensionar o alimentador.`);
+  if(stored&&!choices.includes(stored as PanelConnection))errors.push(`${c.title}: ligação ${stored} incompatível com o fornecimento; revise o quadro de distribuição.`);
+  const result=(c.data.results||{}) as Record<string,unknown>;
+  const circuitBreaker=Number(result.breaker);
+  if(!Number.isFinite(circuitBreaker)||circuitBreaker<=0)errors.push(`${c.title}: disjuntor terminal não dimensionado.`);
+  else if(panelCurrent(c)>circuitBreaker+1e-6)errors.push(`${c.title}: corrente de projeto supera o disjuntor terminal.`);
+  const circuitSection=Number(result.selectedSection);
+  if(!Number.isFinite(circuitSection)||circuitSection<=0)errors.push(`${c.title}: seção do circuito terminal não dimensionada.`);
+ }
+ if(reducedDemand){
+  // A indicação genérica de uma norma não documenta um fator de demanda.
+  // A referência é declarada pelo responsável técnico e não validada automaticamente.
+  const reference=demandJustification.trim();
+  if(!/(celesc|nbr|norma|manual|projeto)/i.test(reference)||!/(tabela|item|seção|secao|anexo|memória|memoria)/i.test(reference)||!/(19|20)\d{2}/.test(reference))
+   errors.push('Para utilizar demanda reduzida, registre documento, ano/edição e tabela/item aplicável. A referência declarada não é verificada automaticamente.');
+ }
+
+ // Reserva conservadora de queda para circuitos terminais: 2% no alimentador,
+ // sem alegar conformidade da queda total (ainda requer cálculo específico).
+ const feederDropBudget=2;
  const rho=0.0225;
  const candidates=Object.entries(table||{}).map(([section,base])=>{
   const size=Number(section),iz=base*(ft||0)*(fg||0);
-  const drop=three?Math.sqrt(3)*ib*rho*len*pf/size:2*ib*rho*len*pf/size;
+  const drop=2*ib*rho*len/size; // Limite resistivo conservador para percurso de ida e retorno; requer validação do esquema real.
   const dropPercent=100*drop/voltage;
   const breaker=feederBreakers.find(n=>n>=ib-1e-9&&n<=iz+1e-9);
   return {size,iz,dropPercent,breaker};
  }).filter(x=>x.size>=6).sort((a,b)=>a.size-b.size);
- // 4% é teto preliminar para o trecho, não valida a queda total até o ponto de utilização.
- const chosen=errors.length?undefined:candidates.find(x=>x.iz>=ib&&x.dropPercent<=4&&x.breaker);
- const neutral=chosen?.size||0,pe=chosen?peSection(chosen.size):0;
+ // O orçamento preliminar de 2% é apenas deste trecho; a queda total precisa ser verificada.
+ // Em sistemas desequilibrados, adota-se a maior corrente fasorial por fase para a ampacidade.
+ // A queda estimada é resistiva e simplificada; reatância e impedância do neutro exigem revisão.
+ const chosen=errors.length?undefined:candidates.find(x=>x.iz>=ib&&x.iz>=neutralIb&&x.dropPercent<=feederDropBudget&&x.breaker);
+ const neutral=chosen?.size||0,pe=chosen?peSection(chosen.size):0; // Neutro integral, sujeito a verificação de harmônicas.
  const fmt=(n:number)=>Number.isFinite(n)?feederFormat(n):'—';
  async function save(){
   if(!projectId||saving||!chosen||errors.length)return;
@@ -586,9 +682,9 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
   try{
    const pr=await supabase.from('eletripro_projects').select('installation').eq('id',projectId).eq('owner_id',userId).single();
    if(pr.error)throw pr.error;
-   const installation={...(pr.data?.installation||{}),demandFactors,demandJustification,feeder:{length,demandFactor:String(demand),voltage:String(voltage),powerFactor:String(pf),maxDrop:'4',groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:demandJustification||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',calculation:{power:sumPower,demand,demandedVA,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
+   const installation={...(pr.data?.installation||{}),demandJustification,demandGroupFactors:groupFactors,demandMode,feeder:{length,demandFactor:String(demand),voltage:String(voltage),powerFactor:String(pf),maxDrop:String(feederDropBudget),groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:demandJustification||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',calculation:{power:sumPower,demand,demandedVA,phaseDemand,phaseUpperBounds,phaseSizingBounds,neutralIb,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
    const res=await supabase.from('eletripro_projects').update({installation,updated_at:new Date().toISOString()}).eq('id',projectId).eq('owner_id',userId);
-   if(res.error)throw res.error;setMessage('Dimensionamento preliminar salvo no projeto.');
+   if(res.error)throw res.error;setMessage('✓ Pré-dimensionamento salvo. Não liberado para execução sem validação técnica da queda total, curto-circuito e proteção.');
   }catch(e){setMessage('Erro ao salvar: '+String(e))}finally{setSaving(false)}
  }
  return <section className="panel sizing-form"><h2>Alimentador geral do quadro de distribuição</h2>
@@ -602,18 +698,22 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  <div><span>Condutor de proteção PE (preliminar)</span><strong>{chosen?fmt(pe)+' mm²':'—'}</strong></div>
  </div>
  <button type="button" className="secondary" onClick={()=>setDetails(v=>!v)}>{details?'Ocultar memória de cálculo':'Mostrar memória de cálculo'}</button>
- {details&&<div className="panel"><h3>Auditoria automática das cargas</h3><p className="hint">A EletriPro identifica o tipo e a potência aparente de cada circuito. Os ambientes vinculados alimentam os circuitos, mas não são somados novamente, evitando dupla contagem. A auditoria não atribui fatores redutores sem referência técnica.</p>
+ {details&&<div className="panel"><h3>Auditoria automática das cargas</h3><p className="hint">A EletriPro identifica o tipo e a potência aparente de cada circuito. Os ambientes vinculados alimentam os circuitos, mas não são somados novamente, evitando dupla contagem. A demanda por grupo é exibida para auditoria. O alimentador permanece dimensionado com 100% das cargas até a validação normativa dos fatores redutores.</p>
  <div className="ep-summary-grid">{demandCategories.map(k=><div key={k}><span>{demandLabels[k]}</span><strong>{fmt(demandTotals[k])} VA</strong><small>{demandAudit.filter(x=>x.category===k).length} circuito(s)</small></div>)}</div>
- <h4>Equipamentos identificados automaticamente</h4><div style={{overflowX:'auto'}}><table><thead><tr><th>Grupo de carga</th><th>Circuitos</th><th>Potência (VA)</th><th>Demanda considerada (VA)</th></tr></thead><tbody>{groupTotals.map(({group,items})=><tr key={group}><td>{demandGroupLabels[group]}</td><td>{items.length}</td><td>{fmt(items.reduce((a,x)=>a+x.va,0))}</td><td>{fmt(items.reduce((a,x)=>a+x.va*demandFactors[x.category],0))}</td></tr>)}</tbody></table></div><p className="hint">A identificação dos equipamentos usa o nome e o tipo dos circuitos. Confira as classificações abaixo; títulos genéricos podem exigir revisão. Não há redução automática de demanda sem metodologia documentada.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Categoria</th><th>Equipamento identificado</th><th>Potência (VA)</th><th>Fator</th><th>Demanda (VA)</th><th>Origem</th></tr></thead><tbody>{demandAudit.map(({c,category,group,va})=><tr key={c.id}><td>{c.title}</td><td>{demandLabels[category]}</td><td>{demandGroupLabels[group]}</td><td>{fmt(va)}</td><td>{fmt(demandFactors[category])}</td><td>{fmt(va*demandFactors[category])}</td><td>{demandCircuitSource(c)}</td></tr>)}</tbody></table></div>
+ <h4>Equipamentos identificados automaticamente</h4><div style={{overflowX:'auto'}}><table><thead><tr><th>Grupo de carga</th><th>Circuitos</th><th>Potência (VA)</th><th>Demanda considerada (VA)</th></tr></thead><tbody>{groupTotals.map(({group,items})=><tr key={group}><td>{demandGroupLabels[group]}</td><td>{items.length}</td><td>{fmt(items.reduce((a,x)=>a+x.va,0))}</td><td>{fmt(items.reduce((a,x)=>a+x.va*effectiveFactor(x.c),0))}</td></tr>)}</tbody></table></div><p className="hint">A identificação dos equipamentos usa o nome e o tipo dos circuitos. Confira as classificações abaixo; títulos genéricos podem exigir revisão. Os fatores documentados alteram somente a demanda informativa; não reduzem automaticamente o alimentador.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Categoria</th><th>Equipamento identificado</th><th>Potência (VA)</th><th>Fator</th><th>Demanda (VA)</th><th>Origem</th></tr></thead><tbody>{demandAudit.map(({c,category,group,va})=><tr key={c.id}><td>{c.title}</td><td>{demandLabels[category]}</td><td>{demandGroupLabels[group]}</td><td>{fmt(va)}</td><td>{fmt(effectiveFactor(c))}</td><td>{fmt(va*effectiveFactor(c))}</td><td>{demandCircuitSource(c)}</td></tr>)}</tbody></table></div>
  {auditIssues.length>0?<div><strong>Pendências de cadastro</strong>{auditIssues.map((issue,i)=><p className="hint" key={i}>{issue}</p>)}</div>:<p className="hint">Todos os circuitos possuem categoria reconhecida e potência aparente disponível.</p>}
  </div>}
- {details&&<div className="panel"><h3>Critérios de demanda (configuração técnica)</h3><p className="hint">O padrão é 100% em todas as categorias. Só informe fator inferior a 1 quando houver critério técnico documentado para o projeto. A EletriPro não presume percentuais normativos.</p><div className="two">{demandCategories.map(k=><label key={k}>{demandLabels[k]} — fator (0 a 1)<input type="number" min="0.01" max="1" step="0.01" value={demandFactors[k]} onChange={e=>{const v=Number(e.target.value);setDemandFactors(old=>({...old,[k]:v}));setMessage('')}}/></label>)}</div><label>Referência técnica / justificativa dos fatores<input value={demandJustification} onChange={e=>setDemandJustification(e.target.value)} placeholder="Ex.: norma da concessionária, tabela e edição"/></label></div>}
+ {details&&<div className="panel"><h3>Critérios de demanda por grupo</h3><p className="hint">Sem uma tabela de demanda aplicável e documentada, o modo conservador considera 100% das cargas. A EletriPro não inventa fatores normativos.</p>
+ <label>Metodologia<select value={demandMode} onChange={e=>setDemandMode(e.target.value as 'conservative'|'documented')}><option value="conservative">Conservadora — 100% das cargas</option><option value="documented">Fatores por grupo — critérios documentados pelo responsável técnico</option></select></label>
+ {demandMode==='documented'&&<><div className="two">{demandGroupOrder.map(k=><label key={k}>{demandGroupLabels[k]} — fator (0 a 1)<input type="number" min="0.01" max="1" step="0.01" value={groupFactors[k]} onChange={e=>setGroupFactors(o=>({...o,[k]:Number(e.target.value)}))}/></label>)}</div><label>Referência técnica, tabela e justificativa<input value={demandJustification} onChange={e=>setDemandJustification(e.target.value)} placeholder="Ex.: documento, edição/ano, tabela/item e condições de aplicação"/></label></>}
+ </div>}
+ {details&&<div className="panel"><h3>Rastreabilidade da seleção do alimentador</h3><p className="hint">As alternativas são avaliadas pela corrente conservadora por fase, capacidade corrigida e queda resistiva estimada exclusivamente neste trecho. A coluna decisão indica por que uma seção foi descartada. A aprovação é preliminar: reserva 2% de queda para este trecho, mas não contempla curto-circuito, seletividade nem queda total.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Seção (mm²)</th><th>Iz corrigida (A)</th><th>Queda (%)</th><th>Disjuntor (A)</th><th>Decisão</th></tr></thead><tbody>{candidates.map(x=><tr key={x.size}><td>{fmt(x.size)}</td><td>{fmt(x.iz)}</td><td>{fmt(x.dropPercent)}</td><td>{x.breaker?fmt(x.breaker):'—'}</td><td>{x.iz<ib?'Iz inferior à corrente de projeto':x.iz<neutralIb?'Neutro exige revisão':x.dropPercent>feederDropBudget?'Queda do trecho superior a '+feederDropBudget+'%':!x.breaker?'Sem disjuntor compatível':chosen?.size===x.size?'Primeira alternativa preliminar':'Alternativa possível'}</td></tr>)}</tbody></table></div></div>}
  {details&&<div className="ep-summary-grid">
- {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada',fmt(demand*100)+' % (média ponderada)'],['Potência aparente demandada',fmt(demandedVA)+' VA'],['Corrente de projeto (Ib)',fmt(ib)+' A'],['Tensão',fmt(voltage)+' V'],['Método de instalação',method],['Condutores carregados',loaded],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+ {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada',fmt(demand*100)+' % (média ponderada)'],['Potência aparente demandada',fmt(demandedVA)+' VA'],['Corrente de projeto conservadora (Ib, 100% das cargas)',fmt(ib)+' A'],['Corrente estimada no neutro (fundamental)',fmt(neutralIb)+' A'],...Object.entries(phaseDemand).map(([phase,current])=>['Fase '+phase+' — fasorial',fmt(current)+' A'] as [string,string]),...Object.entries(phaseUpperBounds).map(([phase,current])=>['Fase '+phase+' — limite conservador',fmt(current)+' A'] as [string,string]),...Object.entries(phaseSizingBounds).map(([phase,current])=>['Fase '+phase+' — limite para dimensionamento (100%)',fmt(current)+' A'] as [string,string][]),['Tensão',fmt(voltage)+' V'],['Método de instalação',method],['Condutores carregados',loaded],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'],['Auditoria de conexões e proteções',errors.length?`${errors.length} pendência(s)`:'Sem pendências cadastrais'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
  </div>}
  {errors.map((e,i)=><p key={i} className="hint" role="alert">{e}</p>)}
  {!errors.length&&!chosen&&<p className="hint" role="alert">Nenhuma combinação válida de condutor e disjuntor foi encontrada nas tabelas disponíveis.</p>}
- <p className="hint">Resultado preliminar: demanda conservadora de 100% por padrão. Fatores reduzidos dependem de referência técnica registrada; após salvar, reabra o Quadro de distribuição para atualizar o resumo por fase. A queda de tensão calculada é apenas do alimentador e não inclui reatância nem os circuitos terminais. Antes da execução, o responsável técnico deve validar demanda, queda total, curto-circuito, capacidade de interrupção, proteção contra choques, seletividade, neutro, PE e requisitos da concessionária.</p>
+ <p className="hint">Referência inicial de fornecimento: CELESC. A EletriPro não aplica automaticamente fatores de demanda da concessionária sem validação da edição, tabela e campo de aplicação. O cálculo do alimentador interno do QD não deve ser confundido com o dimensionamento do padrão de entrada.</p><p className="hint">Resultado preliminar: demanda conservadora de 100% por padrão. O dimensionamento utiliza a maior soma conservadora de correntes por fase, evitando subdimensionamento por cancelamento fasorial presumido. Fatores reduzidos são apenas informativos e não diminuem o alimentador automaticamente; a referência declarada não é verificada pelo sistema; após salvar, reabra o Quadro de distribuição para atualizar o resumo por fase. A queda de tensão calculada usa orçamento conservador de 2% apenas para o alimentador, não inclui reatância nem os circuitos terminais e NÃO comprova o limite total. Antes da execução, o responsável técnico deve validar demanda, queda total, curto-circuito, capacidade de interrupção, proteção contra choques, seletividade, neutro, PE e requisitos da concessionária.</p>
  <div className="ep-form-footer"><button className="primary" disabled={saving||!chosen||errors.length>0} onClick={()=>void save()}>{saving?'Salvando...':'Salvar dimensionamento do QD'}</button></div>
  {message&&<p role="status">{message}</p>}
  </>}</section>;
