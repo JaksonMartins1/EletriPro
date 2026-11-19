@@ -429,6 +429,21 @@ const normalizeDemandFactors=(input:unknown):Record<DemandCategory,number>=>{
  return Object.fromEntries(demandCategories.map(k=>{const v=Number(raw[k]);return [k,Number.isFinite(v)&&v>0&&v<=1?v:1]})) as Record<DemandCategory,number>;
 };
 
+// Auditoria de demanda: classificação e potência aparente por circuito, sem inventar coeficientes normativos.
+const demandCircuitVA=(row:SavedCircuit,defaultPf:number)=>{
+ const va=Number(row.data.powerVA);
+ if(Number.isFinite(va)&&va>0)return va;
+ const w=Number(row.data.power),pf=Number(row.data.pf||defaultPf);
+ return Number.isFinite(w)&&w>0&&Number.isFinite(pf)&&pf>0&&pf<=1?w/pf:0;
+};
+const demandCircuitSource=(row:SavedCircuit)=>Number(row.data.powerVA)>0?'Carga em VA registrada no circuito':'Potência W convertida usando fator de potência cadastrado';
+const demandCircuitIssues=(row:SavedCircuit,defaultPf:number)=>{
+ const issues:string[]=[];
+ if(!['lighting','tug','tue'].includes(String(row.data.circuit||'').toLowerCase()))issues.push('Tipo de circuito não classificado');
+ if(demandCircuitVA(row,defaultPf)<=0)issues.push('Potência aparente não disponível');
+ if(row.data.loadMode==='rooms'&&!Array.isArray(row.data.loadLinks))issues.push('Vínculo com ambientes incompleto');
+ return issues;
+};
 const circuitDemandFactor=(row:SavedCircuit,factors:Record<DemandCategory,number>)=>factors[demandCategory(row)];
 const circuitDemandCurrent=(row:SavedCircuit,factors:Record<DemandCategory,number>)=>panelCurrent(row)*circuitDemandFactor(row,factors);
 const panelCurrent=(row:SavedCircuit)=>{const results=(row.data.results||{}) as Record<string,unknown>;const n=Number(results.current);return Number.isFinite(n)&&n>0?n:0};
@@ -513,8 +528,11 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  }catch(e){if(live)setMessage('Falha ao carregar alimentador: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
  const len=Number(length),voltage=Number(settings.voltage),pf=Number(settings.powerFactor);
  const sumPower=circuits.reduce((a,c)=>a+(Number(c.data.power)||0),0);
- const sumVA=circuits.reduce((a,c)=>a+(Number(c.data.powerVA)>0?Number(c.data.powerVA):Number(c.data.power)/pf||0),0);
- const demandedVA=circuits.reduce((a,c)=>a+((Number(c.data.powerVA)>0?Number(c.data.powerVA):Number(c.data.power)/pf||0)*circuitDemandFactor(c,demandFactors)),0);
+ const sumVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf),0);
+ const demandedVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf)*circuitDemandFactor(c,demandFactors),0);
+ const demandAudit=circuits.map(c=>({c,category:demandCategory(c),va:demandCircuitVA(c,pf),issues:demandCircuitIssues(c,pf)}));
+ const demandTotals=Object.fromEntries(demandCategories.map(k=>[k,demandAudit.filter(x=>x.category===k).reduce((a,x)=>a+x.va,0)])) as Record<DemandCategory,number>;
+ const auditIssues=demandAudit.flatMap(x=>x.issues.map(issue=>`${x.c.title}: ${issue}`));
  const demand=sumVA>0?demandedVA/sumVA:1; // Sem base de demanda validada, 100% da carga. Não inventar fator redutor.
  const three=settings.supply==='three',loaded=three?'3':'2';
  const ib=demandedVA/(voltage*(three?Math.sqrt(3):1));
@@ -526,6 +544,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const reducedDemand=demandCategories.some(k=>demandFactors[k]<1);
  if(reducedDemand&&!demandJustification.trim())errors.push('Informe a referência técnica dos fatores de demanda reduzidos na memória de cálculo.');
  if(!circuits.length)errors.push('Cadastre os circuitos terminais antes de dimensionar o alimentador.');
+ if(auditIssues.length)errors.push('Existem pendências na auditoria de cargas. Consulte a memória de cálculo.');
  if(circuits.some(c=>!(Number(c.data.power)>0)))errors.push('Há circuitos sem potência válida.');
  if(!(voltage>0&&pf>0&&pf<=1))errors.push('Revise tensão e fator de potência em Tipo de instalação.');
  if(!(len>0&&Number.isFinite(len)))errors.push('Informe uma distância positiva em metros.');
@@ -565,6 +584,11 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  <div><span>Condutor de proteção PE (preliminar)</span><strong>{chosen?fmt(pe)+' mm²':'—'}</strong></div>
  </div>
  <button type="button" className="secondary" onClick={()=>setDetails(v=>!v)}>{details?'Ocultar memória de cálculo':'Mostrar memória de cálculo'}</button>
+ {details&&<div className="panel"><h3>Auditoria automática das cargas</h3><p className="hint">A EletriPro identifica o tipo e a potência aparente de cada circuito. Os ambientes vinculados alimentam os circuitos, mas não são somados novamente, evitando dupla contagem. A auditoria não atribui fatores redutores sem referência técnica.</p>
+ <div className="ep-summary-grid">{demandCategories.map(k=><div key={k}><span>{demandLabels[k]}</span><strong>{fmt(demandTotals[k])} VA</strong><small>{demandAudit.filter(x=>x.category===k).length} circuito(s)</small></div>)}</div>
+ <div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Categoria</th><th>Potência (VA)</th><th>Fator</th><th>Demanda (VA)</th><th>Origem</th></tr></thead><tbody>{demandAudit.map(({c,category,va})=><tr key={c.id}><td>{c.title}</td><td>{demandLabels[category]}</td><td>{fmt(va)}</td><td>{fmt(demandFactors[category])}</td><td>{fmt(va*demandFactors[category])}</td><td>{demandCircuitSource(c)}</td></tr>)}</tbody></table></div>
+ {auditIssues.length>0?<div><strong>Pendências de cadastro</strong>{auditIssues.map((issue,i)=><p className="hint" key={i}>{issue}</p>)}</div>:<p className="hint">Todos os circuitos possuem categoria reconhecida e potência aparente disponível.</p>}
+ </div>}
  {details&&<div className="panel"><h3>Critérios de demanda (configuração técnica)</h3><p className="hint">O padrão é 100% em todas as categorias. Só informe fator inferior a 1 quando houver critério técnico documentado para o projeto. A EletriPro não presume percentuais normativos.</p><div className="two">{demandCategories.map(k=><label key={k}>{demandLabels[k]} — fator (0 a 1)<input type="number" min="0.01" max="1" step="0.01" value={demandFactors[k]} onChange={e=>{const v=Number(e.target.value);setDemandFactors(old=>({...old,[k]:v}));setMessage('')}}/></label>)}</div><label>Referência técnica / justificativa dos fatores<input value={demandJustification} onChange={e=>setDemandJustification(e.target.value)} placeholder="Ex.: norma da concessionária, tabela e edição"/></label></div>}
  {details&&<div className="ep-summary-grid">
  {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada',fmt(demand*100)+' % (média ponderada)'],['Potência aparente demandada',fmt(demandedVA)+' VA'],['Corrente de projeto (Ib)',fmt(ib)+' A'],['Tensão',fmt(voltage)+' V'],['Método de instalação',method],['Condutores carregados',loaded],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
