@@ -9,7 +9,7 @@ type BudgetChoice={id:string;title:string;amount:number};
 const statusNames:Record<WorkStatus,string>={awaiting:'Aguardando aprovação',approved:'Em execução / Aprovado',finished:'Executado / Finalizado'};
 const brl=(n:number)=>n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const monthLabel=(date:string)=>new Date(date+'T12:00:00').toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
-const sections=[['Painel',LayoutDashboard],['Clientes',Users],['Tipo de instalação',Building2],['Dimensionamento',Calculator],['Ambientes',Ruler],['Quadro de distribuição',ClipboardList],['Materiais/Orçamentos',ClipboardList],['Personalização',Palette],['Meu Perfil',Users],['Assinatura',Crown]] as const;
+const sections=[['Painel',LayoutDashboard],['Clientes',Users],['Tipo de instalação',Building2],['Dimensionamento',Calculator],['Ambientes',Ruler],['Quadro de distribuição',ClipboardList],['Alimentador geral',Zap],['Materiais/Orçamentos',ClipboardList],['Personalização',Palette],['Meu Perfil',Users],['Assinatura',Crown]] as const;
 const statesBR=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 const formatMobile=(v:string)=>{const d=v.replace(/\D/g,'').slice(0,11);return d.length>7?`(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`:d.length>2?`(${d.slice(0,2)}) ${d.slice(2)}`:d;};
 const colors=['#a3a3a3','#eab308','#3b82f6','#22c55e','#a855f7'];
@@ -471,6 +471,84 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  <p className="hint">Somas indicativas de Ib por fase, sem simultaneidade, demanda ou cálculo da corrente real do alimentador. Circuitos bipolares e tripolares entram em cada fase envolvida. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p>{message&&<p role="status">{message}</p>}</section>;
 }
 
+
+type FeederForm={demandFactor:string;length:string;voltage:string;powerFactor:string;maxDrop:string;groupCount:string;neutralSection:string;breaker:string;notes:string};
+const feederDefault:FeederForm={demandFactor:'1',length:'15',voltage:'',powerFactor:'',maxDrop:'4',groupCount:'1',neutralSection:'',breaker:'',notes:''};
+const feederBreakers=[10,16,20,25,32,40,50,63,80,100,125,160,200,225,250,315,400,500,630];
+const feederFormat=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:2});
+function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
+ const [circuits,setCircuits]=useState<SavedCircuit[]>([]);
+ const [length,setLength]=useState('15');
+ const [projectId,setProjectId]=useState('');
+ const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[message,setMessage]=useState('');
+ const [details,setDetails]=useState(false);
+ useEffect(()=>{let live=true;void(async()=>{try{
+  const id=await ensureEletriProject(clientId,userId);
+  const [pr,cr]=await Promise.all([supabase.from('eletripro_projects').select('installation').eq('id',id).single(),supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id)]);
+  if(pr.error)throw pr.error;if(cr.error)throw cr.error;
+  if(live){setProjectId(id);setCircuits((cr.data||[]) as SavedCircuit[]);const previous=pr.data?.installation?.feeder;if(previous?.length)setLength(String(previous.length));}
+ }catch(e){if(live)setMessage('Falha ao carregar alimentador: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
+ const len=Number(length),voltage=Number(settings.voltage),pf=Number(settings.powerFactor);
+ const sumPower=circuits.reduce((a,c)=>a+(Number(c.data.power)||0),0);
+ const sumVA=circuits.reduce((a,c)=>a+(Number(c.data.powerVA)>0?Number(c.data.powerVA):Number(c.data.power)/pf||0),0);
+ const demand=1; // Sem dados de demanda homologados, considerar 100% da carga.
+ const three=settings.supply==='three',loaded=three?'3':'2';
+ const ib=sumVA/(voltage*(three?Math.sqrt(3):1));
+ const method=settings.method,material=settings.conductorMaterial,insulation=settings.conductorInsulation;
+ const table=ampacity5410[insulation]?.[material]?.[method]?.[loaded];
+ const ft=temperature5410[insulation]?.[settings.temperature],fg=grouping5410[settings.groupMode]?.[settings.groupCount];
+ const errors:string[]=[];
+ if(!circuits.length)errors.push('Cadastre os circuitos terminais antes de dimensionar o alimentador.');
+ if(circuits.some(c=>!(Number(c.data.power)>0)))errors.push('Há circuitos sem potência válida.');
+ if(!(voltage>0&&pf>0&&pf<=1))errors.push('Revise tensão e fator de potência em Tipo de instalação.');
+ if(!(len>0&&Number.isFinite(len)))errors.push('Informe uma distância positiva em metros.');
+ if(!table||ft===undefined||fg===undefined)errors.push('Revise método de instalação, temperatura e agrupamento em Tipo de instalação.');
+ if(material==='aluminum')errors.push('Dimensionamento automático de alumínio indisponível; requer validação técnica.');
+ const rho=0.0225;
+ const candidates=Object.entries(table||{}).map(([section,base])=>{
+  const size=Number(section),iz=base*(ft||0)*(fg||0);
+  const drop=three?Math.sqrt(3)*ib*rho*len*pf/size:2*ib*rho*len*pf/size;
+  const dropPercent=100*drop/voltage;
+  const breaker=feederBreakers.find(n=>n>=ib-1e-9&&n<=iz+1e-9);
+  return {size,iz,dropPercent,breaker};
+ }).filter(x=>x.size>=6).sort((a,b)=>a.size-b.size);
+ // 4% é teto preliminar para o trecho, não valida a queda total até o ponto de utilização.
+ const chosen=errors.length?undefined:candidates.find(x=>x.iz>=ib&&x.dropPercent<=4&&x.breaker);
+ const neutral=chosen?.size||0,pe=chosen?peSection(chosen.size):0;
+ const fmt=(n:number)=>Number.isFinite(n)?feederFormat(n):'—';
+ async function save(){
+  if(!projectId||saving||!chosen||errors.length)return;
+  setSaving(true);setMessage('');
+  try{
+   const pr=await supabase.from('eletripro_projects').select('installation').eq('id',projectId).eq('owner_id',userId).single();
+   if(pr.error)throw pr.error;
+   const installation={...(pr.data?.installation||{}),feeder:{length,demandFactor:'1',voltage:String(voltage),powerFactor:String(pf),maxDrop:'4',groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:'Dimensionamento automático preliminar com demanda de 100%; verificar concessionária e demais critérios.',calculation:{power:sumPower,demand,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
+   const res=await supabase.from('eletripro_projects').update({installation,updated_at:new Date().toISOString()}).eq('id',projectId).eq('owner_id',userId);
+   if(res.error)throw res.error;setMessage('Dimensionamento preliminar salvo no projeto.');
+  }catch(e){setMessage('Erro ao salvar: '+String(e))}finally{setSaving(false)}
+ }
+ return <section className="panel sizing-form"><h2>Alimentador geral do quadro de distribuição</h2>
+ <p className="hint">A EletriPro utiliza automaticamente os circuitos e os parâmetros de Tipo de instalação. O disjuntor indicado é o do quadro de distribuição, não o da caixa de medição.</p>
+ {loading?<p>Carregando circuitos...</p>:<>
+ <div className="two"><label>Distância da caixa de medição até o QD (m)<input type="number" min="0.1" step="0.1" value={length} onChange={e=>{setLength(e.target.value);setMessage('')}}/></label></div>
+ <div className="ep-summary-grid">
+ <div><span>Condutor de fase</span><strong>{chosen?fmt(chosen.size)+' mm²':'—'}</strong></div>
+ <div><span>Disjuntor geral do QD</span><strong>{chosen?fmt(chosen.breaker||0)+' A':'—'}</strong></div>
+ <div><span>Condutor neutro (preliminar)</span><strong>{chosen?fmt(neutral)+' mm²':'—'}</strong></div>
+ <div><span>Condutor de proteção PE (preliminar)</span><strong>{chosen?fmt(pe)+' mm²':'—'}</strong></div>
+ </div>
+ <button type="button" className="secondary" onClick={()=>setDetails(v=>!v)}>{details?'Ocultar memória de cálculo':'Mostrar memória de cálculo'}</button>
+ {details&&<div className="ep-summary-grid">
+ {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada','100% (conservadora)'],['Corrente de projeto (Ib)',fmt(ib)+' A'],['Tensão',fmt(voltage)+' V'],['Método de instalação',method],['Condutores carregados',loaded],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+ </div>}
+ {errors.map((e,i)=><p key={i} className="hint" role="alert">{e}</p>)}
+ {!errors.length&&!chosen&&<p className="hint" role="alert">Nenhuma combinação válida de condutor e disjuntor foi encontrada nas tabelas disponíveis.</p>}
+ <p className="hint">Resultado preliminar: a demanda foi considerada integral (100%). A queda de tensão calculada é apenas do alimentador e não inclui reatância nem os circuitos terminais. Antes da execução, o responsável técnico deve validar demanda, queda total, curto-circuito, capacidade de interrupção, proteção contra choques, seletividade, neutro, PE e requisitos da concessionária.</p>
+ <div className="ep-form-footer"><button className="primary" disabled={saving||!chosen||errors.length>0} onClick={()=>void save()}>{saving?'Salvando...':'Salvar dimensionamento do QD'}</button></div>
+ {message&&<p role="status">{message}</p>}
+ </>}</section>;
+}
+
 type MaterialRow={id:string;description:string;quantity:number;unit:string;unit_price:number;item_type?:'material'|'labor'};
 type GeneratedMaterial=MaterialRow & {source_key:string|null};
 
@@ -805,8 +883,8 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
 }
 
 
-type ReportOptions={installation:boolean;environments:boolean;circuits:boolean;distribution:boolean;materials:boolean;labor:boolean;values:boolean};
-const reportDefaults:ReportOptions={installation:true,environments:true,circuits:true,distribution:true,materials:true,labor:true,values:true};
+type ReportOptions={installation:boolean;environments:boolean;circuits:boolean;distribution:boolean;feeder:boolean;materials:boolean;labor:boolean;values:boolean};
+const reportDefaults:ReportOptions={installation:true,environments:true,circuits:true,distribution:true,feeder:true,materials:true,labor:true,values:true};
 const reportLabels:Record<string,string>={residential:'Residencial',commercial:'Comercial',industrial:'Industrial (baixa tensão)',single:'Monofásico',two:'Bifásico',three:'Trifásico',copper:'Cobre',aluminum:'Alumínio',bundle:'Feixe ou conduto fechado',singleLayer:'Camada única', 'phase-neutral':'Fase + neutro','phase-phase':'Duas fases','lighting':'Iluminação','tug':'Tomadas de uso geral (TUG)','tue':'Tomadas de uso específico (TUE)'};
 const reportText=(v:unknown)=>v===null||v===undefined||v===''?'Não informado':String(v);
 const translated=(v:unknown)=>reportLabels[String(v)]||reportText(v);
@@ -838,6 +916,18 @@ function TechnicalReport({client,userId,professional,logo,accent,settings}:{clie
    const result=(c:SavedCircuit)=>(c.data.results||{}) as Record<string,unknown>;
    if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type||( /iluminaç[aã]o|lighting/i.test(c.title)?'lighting':undefined)),reportNum(c.data.power),reportText(result(c).breaker),reportText(result(c).selectedSection)]));
    if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Corrente de Projeto (A)'],[...circuits].sort((a,b)=>(Number(result(b).breaker)||0)-(Number(result(a).breaker)||0)).map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportNum(result(c).current)]}));
+   if(options.feeder){
+    const feeder=project?.installation?.feeder as (FeederForm&{calculation?:Record<string,unknown>})|undefined;
+    const f=feeder?.calculation;
+    add('Alimentador geral',['Parâmetro','Valor'],f?[
+     ['Potência demandada (W)',reportNum(f.power)],['Fator de demanda',reportText(f.demand)],
+     ['Corrente de projeto (A)',reportNum(f.ib)],['Condutor de fase (mm²)',reportNum(f.section)],
+     ['Capacidade corrigida Iz (A)',reportNum(f.iz)],['Disjuntor geral (A)',reportNum(f.breaker)],
+     ['Neutro (mm²)',reportNum(f.neutral)],['PE preliminar (mm²)',reportNum(f.pe)],
+     ['Queda resistiva estimada (%)',reportNum(f.dropPercent)],
+     ['Critério de demanda / observações',reportText(feeder?.notes)]
+    ]:[['Situação','Dimensionamento do alimentador ainda não cadastrado']]);
+   }
    const chosen=materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials)).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
    if(options.materials||options.labor){
     add('Materiais e mão de obra',['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])]),'materials');
@@ -847,7 +937,7 @@ function TechnicalReport({client,userId,professional,logo,accent,settings}:{clie
   }catch(e:any){setError(e?.message||'Falha ao gerar o PDF. Confira os dados e tente novamente.')}finally{setBusy(false)}
  };
  return <section className="panel"><h2>Relatório técnico em PDF</h2><p>Selecione as seções desejadas. Descrição e quantidade aparecem em todas as listas exportadas. O arquivo PDF será baixado diretamente.</p><div className="ep-report-options">{([
- ['installation','Tipo de instalação'],['environments','Ambientes'],['circuits','Dimensionamento dos circuitos'],['distribution','Quadro de distribuição'],['materials','Lista de materiais'],['labor','Mão de obra'],['values','Valores e totais']
+ ['installation','Tipo de instalação'],['environments','Ambientes'],['circuits','Dimensionamento dos circuitos'],['distribution','Quadro de distribuição'],['feeder','Alimentador geral'],['materials','Lista de materiais'],['labor','Mão de obra'],['values','Valores e totais']
  ] as [keyof ReportOptions,string][]).map(([key,label])=><label key={key}><input type="checkbox" checked={options[key]} onChange={e=>change(key,e.target.checked)}/> {label}</label>)}</div><button className="primary" type="button" disabled={busy} onClick={()=>void generate()}>{busy?'Gerando PDF...':'Gerar relatório / PDF'}</button>{error&&<p role="alert" className="hint">{error}</p>}<p className="hint">A geração ocorre no navegador, usando os dados do Supabase. Nenhum registro é alterado.</p></section>
 }
 
@@ -864,7 +954,7 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
  const [activeClientId,setActiveClientId]=useState<string|null>(null);
  const [clientAreaTab,setClientAreaTab]=useState('Tipo de instalação');
  const budgetLoadedFor=React.useRef<string|null>(null);
- const clientAreaTabs=['Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos','Relatórios'];
+ const clientAreaTabs=['Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Alimentador geral','Materiais/Orçamentos','Relatórios'];
  const clientAreaOpen=clientAreaTabs.includes(tab);
  const activeClient=clients.find(c=>c.id===activeClientId);
  const clientStorageKey=(suffix:string)=>`eletripro-client-${session?.user?.id||'anon'}-${activeClientId||'none'}-${suffix}`;
@@ -881,7 +971,9 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
     if(!supabase||!session?.user?.id||!activeClientId||installationLoading)return;
     const clientId=activeClientId;
     setInstallationSaving(true);setInstallationStatus('');
-    const {error}=await supabase.from('eletripro_projects').upsert({client_id:clientId,owner_id:session.user.id,installation:installationSettings,updated_at:new Date().toISOString()},{onConflict:'client_id'});
+    const existing=await supabase.from('eletripro_projects').select('installation').eq('client_id',clientId).eq('owner_id',session.user.id).maybeSingle();
+    if(existing.error){setInstallationStatus('Erro ao carregar parâmetros anteriores: '+existing.error.message);setInstallationSaving(false);return}
+    const {error}=await supabase.from('eletripro_projects').upsert({client_id:clientId,owner_id:session.user.id,installation:{...(existing.data?.installation||{}),...installationSettings},updated_at:new Date().toISOString()},{onConflict:'client_id'});
     if(activeClientId===clientId)setInstallationStatus(error?'Erro ao salvar: '+error.message:'Tipo de instalação salvo no Supabase.');
     setInstallationSaving(false);
   }
@@ -997,6 +1089,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div></section>}
 {tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation} onSave={()=>void saveInstallation()} saving={installationLoading||installationSaving}/>{installationStatus&&installationStatus.startsWith("Erro")&&<p className="hint" role="alert">{installationStatus}</p>}</>}
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
+{tab==='Alimentador geral'&&activeClient&&<FeederPanel key={'feeder-'+activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
 {tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} logo={logo} accent={accent} settings={installationSettings}/>}
@@ -1012,6 +1105,6 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Ganhos por mês"><div className="ep-workflow-head"><h2>Ganhos por mês</h2><button className="outline" onClick={()=>setShowEarnings(false)} aria-label="Fechar"><X size={18}/></button></div>
  {monthlyEarnings.length?monthlyEarnings.map(([month,total])=><div className="ep-month-row" key={month}><span>{monthLabel(month+'-01')}</span><strong>{brl(total)}</strong></div>):<p>Nenhum serviço finalizado com orçamento registrado.</p>}
  <div className="ep-total-highlight"><span>Total acumulado</span><strong>{brl(earningsTotal)}</strong></div><button className="outline" onClick={()=>setShowEarnings(false)}>Fechar</button></section></div>}
- {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos','Relatórios'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
+ {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Alimentador geral','Materiais/Orçamentos','Relatórios'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
 </main><footer>EletriPro · Interface v0.7.37 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
