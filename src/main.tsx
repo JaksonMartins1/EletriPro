@@ -250,7 +250,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
     if(result.error)setCircuitStatus('Erro ao salvar circuito: '+result.error.message);
-    else if(result.data){const saved=result.data as SavedCircuit;setSavedCircuits(old=>selectedCircuitId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedCircuitId(saved.id);setCircuitStatus('Circuito salvo no Supabase.');}
+    else if(result.data){const saved=result.data as SavedCircuit;setSavedCircuits(old=>selectedCircuitId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedCircuitId(saved.id);try{await syncCircuitMaterials(project.id,saved);await syncUnifiedBudget(project.id);setCircuitStatus('Circuito e materiais atualizados automaticamente.')}catch(e){setCircuitStatus('Circuito salvo, mas a atualização dos materiais falhou: '+(e instanceof Error?e.message:String(e)))}}
     setCircuitBusy(false);
   }
   async function deleteCircuit(){
@@ -259,7 +259,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     const id=selectedCircuitId;
     const {error}=await supabase.from('eletripro_circuits').delete().eq('id',id);
     if(error)setCircuitStatus('Erro ao excluir: '+error.message);
-    else{setSavedCircuits(old=>old.filter(x=>x.id!==id));clearCircuit();setCircuitStatus('Circuito excluído do Supabase.');}
+    else{setSavedCircuits(old=>old.filter(x=>x.id!==id));clearCircuit();try{const projectId=await ensureEletriProject(clientId,userId);await syncCircuitMaterials(projectId,null,id);await syncUnifiedBudget(projectId);setCircuitStatus('Circuito excluído e materiais vinculados removidos.')}catch(e){setCircuitStatus('Circuito excluído; confira materiais: '+(e instanceof Error?e.message:String(e)))}}
     setCircuitBusy(false);
   }
 
@@ -488,6 +488,51 @@ async function ensureEletriProject(clientId:string,userId:string){
  }
  return String(created.data.id);
 }
+// v0.7.39: sincronização automática por circuito; preserva preços e itens manuais.
+function generatedCircuitItems(c:SavedCircuit){
+ const d=c.data||{},r=(d.results||{}) as Record<string,unknown>;
+ const section=Number(r.selectedSection),breaker=Number(r.breaker),length=Number(d.length);
+ if(!(section>0&&breaker>0&&length>0))return null;
+ const cfg=(d.installationSnapshot||defaultInstallation) as InstallationSettings;
+ const wiring=String(d.wiring||cfg.wiring||'phase-neutral');
+ const list=budgetCableItems({length,size:section,material:String(d.material||cfg.conductorMaterial||'copper'),insulation:String(d.insulation||cfg.conductorInsulation||'PVC 70 °C'),circuit:String(d.circuit||'tug'),wiring,breaker,curve:String(r.curve||'a confirmar'),poles:wiring==='phase-neutral'?1:wiring==='phase-phase'?2:3});
+ return list.map((item,i)=>({description:item.description,quantity:item.quantity,unit:item.unit,source_key:`${c.id}:${item.description.includes('Disjuntor')?'breaker':item.description.includes('(Fase)')?'phase':item.description.includes('(Neutro)')?'neutral':item.description.includes('(Retorno)')?'return':item.description.includes('(Proteção (PE))')?'pe':i}`}));
+}
+async function syncCircuitMaterials(projectId:string,circuit:SavedCircuit|null,removedId?:string){
+ if(!supabase)throw new Error('Supabase indisponível');
+ const id=removedId||circuit?.id;
+ if(!id)return;
+ const found=await supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',projectId).not('source_key','is',null);
+ if(found.error)throw found.error;
+ const existing=((found.data||[]) as GeneratedMaterial[]).filter(x=>x.source_key?.startsWith(id+':'));
+ const desired=circuit?generatedCircuitItems(circuit):[];
+ // Sem dimensionamento válido, não apaga materiais existentes: exige revisão.
+ if(desired===null)throw new Error('Circuito sem dimensionamento completo. Materiais anteriores preservados para revisão.');
+ for(const item of desired||[]){
+  const old=existing.find(x=>x.source_key===item.source_key);
+  const r=old?await supabase.from('eletripro_materials').update({description:item.description,quantity:item.quantity,unit:item.unit}).eq('id',old.id).eq('project_id',projectId):await supabase.from('eletripro_materials').insert({project_id:projectId,...item,unit_price:0,item_type:'material'});
+  if(r.error)throw r.error;
+ }
+ const stale=existing.filter(x=>!(desired||[]).some(y=>y.source_key===x.source_key));
+ if(stale.length){const r=await supabase.from('eletripro_materials').delete().eq('project_id',projectId).in('id',stale.map(x=>x.id));if(r.error)throw r.error;}
+}
+// Orçamento operacional único, separado dos orçamentos históricos.
+const UNIFIED_BUDGET_TITLE='Lista unificada — Materiais e mão de obra';
+async function syncUnifiedBudget(projectId:string){
+ if(!supabase)throw new Error('Supabase indisponível');
+ const m=await supabase.from('eletripro_materials').select('description,quantity,unit,unit_price,item_type').eq('project_id',projectId);
+ if(m.error)throw m.error;
+ const b=await supabase.from('eletripro_budgets').select('id').eq('project_id',projectId).eq('title',UNIFIED_BUDGET_TITLE).maybeSingle();
+ if(b.error)throw b.error;
+ let budgetId=b.data?.id as string|undefined;
+ if(!budgetId){const created=await supabase.from('eletripro_budgets').insert({project_id:projectId,title:UNIFIED_BUDGET_TITLE,status:'rascunho'}).select('id').single();if(created.error)throw created.error;budgetId=created.data.id;}
+ // Nunca reescrever itens de orçamento histórico: apenas o orçamento operacional.
+ const existing=await supabase.from('eletripro_budget_items').select('id').eq('budget_id',budgetId);
+ if(existing.error)throw existing.error;
+ if(existing.data?.length){const del=await supabase.from('eletripro_budget_items').delete().eq('budget_id',budgetId);if(del.error)throw del.error;}
+ const items=(m.data||[]).map(x=>({budget_id:budgetId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unit_price,item_type:x.item_type==='labor'?'labor':'material'}));
+ if(items.length){const ins=await supabase.from('eletripro_budget_items').insert(items);if(ins.error)throw ins.error;}
+}
 function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:string;localBudget:BudgetItem[]}){
  const [rows,setRows]=useState<MaterialRow[]>([]),[projectId,setProjectId]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState('');
  const [description,setDescription]=useState(''),[quantity,setQuantity]=useState('1'),[unit,setUnit]=useState('un'),[unitPrice,setUnitPrice]=useState('0');
@@ -519,46 +564,25 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
    :await supabase.from('eletripro_materials').insert({project_id:projectId,...payload});
   setBusy(false);
   if(result.error){setStatus('Erro ao salvar: '+result.error.message);return}
-  reset();setRefreshCount(x=>x+1);
+  try{await syncUnifiedBudget(projectId)}catch(e){setStatus('Material salvo, mas orçamento não sincronizado: '+String(e))}reset();setRefreshCount(x=>x+1);
  }
  async function remove(row:MaterialRow){
   if(!supabase||!projectId||busy||!window.confirm('Excluir o material '+row.description+'?'))return;
   setBusy(true);const result=await supabase.from('eletripro_materials').delete().eq('id',row.id).eq('project_id',projectId);
   setBusy(false);if(result.error){setStatus('Erro ao excluir: '+result.error.message);return}
-  if(editingId===row.id)reset();setRefreshCount(x=>x+1);
+  if(editingId===row.id)reset();try{await syncUnifiedBudget(projectId)}catch(e){setStatus('Exclusão salva, mas orçamento não sincronizado: '+String(e))}setRefreshCount(x=>x+1);
  }
  async function consolidateAll(){
   if(!supabase||!projectId||busy)return;
-  if(!window.confirm('Consolidar cabos e disjuntores de todos os circuitos salvos? Os preços dos materiais gerados serão mantidos. Os materiais manuais não serão alterados.'))return;
-  setBusy(true);setStatus('Consolidando circuitos...');
+  setBusy(true);setStatus('Conferindo todos os circuitos...');
   try{
-   const [cr,mr]=await Promise.all([
-    supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',projectId),
-    supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',projectId).not('source_key','is',null)
-   ]);
-   if(cr.error)throw cr.error;if(mr.error)throw mr.error;
-   const existing=(mr.data||[]) as GeneratedMaterial[];
-   const desired:{source_key:string;description:string;quantity:number;unit:string}[]=[];
+   const cr=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',projectId);
+   if(cr.error)throw cr.error;
    const skipped:string[]=[];
-   for(const c of (cr.data||[]) as SavedCircuit[]){
-    const d=c.data||{},r=(d.results||{}) as Record<string,unknown>;
-    const section=Number(r.selectedSection),breaker=Number(r.breaker),length=Number(d.length);
-    if(!(section>0&&breaker>0&&length>0)){skipped.push(c.title);continue}
-    const cfg=(d.installationSnapshot||defaultInstallation) as InstallationSettings;
-    const curve=String(r.curve||'a confirmar');
-    const wiring=String(d.wiring||cfg.wiring||'phase-neutral');
-    const list=budgetCableItems({length,size:section,material:String(d.material||cfg.conductorMaterial||'copper'),insulation:String(d.insulation||cfg.conductorInsulation||'PVC 70 °C'),circuit:String(d.circuit||'tug'),wiring,breaker,curve,poles:wiring==='phase-neutral'?1:wiring==='phase-phase'?2:3});
-    list.forEach((item,i)=>desired.push({description:item.description,quantity:item.quantity,unit:item.unit,source_key:`${c.id}:${item.description.includes('Disjuntor')?'breaker':item.description.includes('(Fase)')?'phase':item.description.includes('(Neutro)')?'neutral':item.description.includes('(Retorno)')?'return':item.description.includes('(Proteção (PE))')?'pe':i}`}));
-   }
-   for(const item of desired){
-    const old=existing.find(x=>x.source_key===item.source_key);
-    const payload={description:item.description,quantity:item.quantity,unit:item.unit};
-    const result=old?await supabase.from('eletripro_materials').update(payload).eq('id',old.id).eq('project_id',projectId):await supabase.from('eletripro_materials').insert({project_id:projectId,...payload,unit_price:0,source_key:item.source_key});
-    if(result.error)throw result.error;
-   }
-   setStatus(`${desired.length} itens consolidados. ${skipped.length?`Sem dimensionamento válido: ${skipped.join(', ')}.`:''} Preços existentes preservados.`);
-   setRefreshCount(x=>x+1);
-  }catch(e){setStatus('Erro ao consolidar: '+(e instanceof Error?e.message:String(e)))}finally{setBusy(false)}
+   for(const c of (cr.data||[]) as SavedCircuit[]){try{await syncCircuitMaterials(projectId,c)}catch(e){skipped.push(c.title+': '+String(e))}}
+   await syncUnifiedBudget(projectId);
+   setStatus(skipped.length?'Revisar circuitos: '+skipped.join('; '):'Materiais e orçamento operacional sincronizados.');setRefreshCount(x=>x+1);
+  }catch(e){setStatus('Erro na consolidação: '+String(e))}finally{setBusy(false)}
  }
  async function importBudget(){
   if(!supabase||!projectId||busy||!localBudget.length)return;
@@ -566,12 +590,12 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
   setBusy(true);setStatus('Importando itens...');
   const result=await supabase.from('eletripro_materials').insert(localBudget.map(item=>({project_id:projectId,description:item.description,quantity:item.quantity,unit:item.unit,unit_price:item.unitPrice})));
   setBusy(false);if(result.error){setStatus('Erro na importação: '+result.error.message);return}
-  setRefreshCount(x=>x+1);
+  try{await syncUnifiedBudget(projectId)}catch(e){setStatus('Importação salva, mas orçamento não sincronizado: '+String(e))}setRefreshCount(x=>x+1);
  }
  return <section className="panel"><div className="panel-heading"><div><h2>Materiais e mão de obra</h2></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Incluir item</button></div>
  {status&&<p className="hint" role="status">{status}</p>}
  <div className="ep-record-list">{rows.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,"0")}</span><div className="ep-material-info"><strong>{r.item_type==='labor'?'Mão de obra · ':''}{r.description}</strong><span>{Number(r.quantity).toLocaleString("pt-BR",{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price));setItemType(r.item_type||'material')}}>Editar</button><button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></div></div>)}</div>
- <div className="ep-material-tools"><button type="button" className="outline" disabled={busy||!projectId} onClick={()=>void consolidateAll()}>Consolidar materiais dos circuitos</button><p className="hint">Atualiza as quantidades de cabos e disjuntores gerados, preservando preços e materiais cadastrados manualmente. Revise as quantidades e os percursos reais.</p></div>
+ <div className="ep-material-tools"><button type="button" className="outline" disabled={busy||!projectId} onClick={()=>void consolidateAll()}>Reconciliar materiais dos circuitos</button><p className="hint">Os materiais são atualizados automaticamente ao salvar ou excluir circuitos. Use este botão apenas para reconciliar dados anteriores. Revise as quantidades e os percursos reais.</p></div>
  {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
  <div className="ep-total-highlight"><span>Total de materiais e mão de obra</span><strong>{moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></div>
  {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)reset()}}><div className="panel sizing-form ep-editor-card" role="dialog" aria-modal={true} aria-label={editingId?'Editar material':'Cadastrar material'}><div className="ep-editor-heading"><h3>{editingId?'Editar material':'Cadastrar material'}</h3><button type="button" className="ep-close" aria-label="Fechar" onClick={reset} disabled={busy}><X size={20}/></button></div>
@@ -851,6 +875,7 @@ async function openWorkflow(client:Client){
   const project=await supabase.from('eletripro_projects').select('id').eq('client_id',client.id).maybeSingle();
   if(project.error)throw project.error;
   if(project.data?.id){
+   await syncUnifiedBudget(project.data.id);
    const budgets=await supabase.from('eletripro_budgets').select('id,title').eq('project_id',project.data.id);
    if(budgets.error)throw budgets.error;
    const choices:BudgetChoice[]=[];
@@ -929,7 +954,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
  <div className="ep-workflow-head"><div><h2>Situação do cliente</h2><p>{workflowClient.name}</p></div><button className="outline" onClick={()=>setWorkflowClient(null)} disabled={workflowBusy} aria-label="Fechar"><X size={18}/></button></div>
  <label>Andamento<select value={workflowStatus} disabled={workflowBusy} onChange={e=>setWorkflowStatus(e.target.value as WorkStatus)}><option value="awaiting">Aguardando aprovação</option><option value="approved">Em execução / Aprovado</option><option value="finished">Executado / Finalizado</option></select></label>
- {workflowStatus==='finished'&&<><label>Orçamento executado<select value={workflowBudget} disabled={workflowBusy||workflowLoading} onChange={e=>setWorkflowBudget(e.target.value)}><option value="">Selecione o orçamento</option>{workflowChoices.map(b=><option key={b.id} value={b.id}>{b.title} — {brl(b.amount)}</option>)}</select></label><p className="hint">O valor do orçamento escolhido será registrado como ganho na data da finalização. Alterações futuras no orçamento não modificam automaticamente esse registro.</p></>}
+ {workflowStatus==='finished'&&<><label>Orçamento executado<select value={workflowBudget} disabled={workflowBusy||workflowLoading} onChange={e=>setWorkflowBudget(e.target.value)}><option value="">Selecione o orçamento</option>{workflowChoices.map(b=><option key={b.id} value={b.id}>{b.title} — {brl(b.amount)}</option>)}</select></label><p className="hint">O valor do orçamento escolhido será registrado como ganho na data da finalização. O valor registrado na finalização permanece como histórico, mesmo que a lista seja alterada depois.</p></>}
  <div className="ep-summary-actions"><button className="primary" disabled={workflowBusy||workflowLoading} onClick={()=>void saveWorkflow()}>{workflowBusy?'Salvando...':'Salvar'}</button><button className="outline" disabled={workflowBusy} onClick={()=>setWorkflowClient(null)}>Fechar</button></div>
  </section></div>}
  {showEarnings&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget)setShowEarnings(false)}}>
