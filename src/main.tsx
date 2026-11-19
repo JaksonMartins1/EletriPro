@@ -49,7 +49,8 @@ function InstallationSetup({settings,onChange,onSave,saving}:{settings:Installat
 type BudgetItem={id:string;description:string;unit:string;quantity:number;unitPrice:number};
 // Seção preliminar de PE pelo critério simplificado para mesmo material da fase.
 // O projeto deve confirmar condições de instalação e eventual cálculo adiabático.
-const peSection=(phase:number)=>phase<=16?phase:phase<=35?16:phase/2;
+const standardPeSections=[1.5,2.5,4,6,10,16,25,35,50,70,95,120,150,185,240,300];
+const peSection=(phase:number)=>{const required=phase<=16?phase:phase<=35?16:phase/2;return standardPeSections.find(v=>v>=required)||required;};
 const budgetCableItems=(params:{length:number;size:number;material:string;insulation:string;circuit:string;wiring:string;breaker:number;curve:string;poles:number}):BudgetItem[]=>{
  const {length,size,material,insulation,circuit,wiring,breaker,curve,poles}=params;
  const base=`Cabo flexível de ${material==='copper'?'cobre':'alumínio'} ${insulation}`;
@@ -153,7 +154,7 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
    ?await supabase.from('eletripro_environments').update({title:title.trim(),data,updated_at:new Date().toISOString()}).eq('id',selectedId).eq('project_id',projectId).select('id,title,data').single()
    :await supabase.from('eletripro_environments').insert({project_id:projectId,title:title.trim(),data}).select('id,title,data').single();
   if(result.error)setStatus('Erro ao salvar ambiente: '+result.error.message);
-  else if(result.data){const saved=result.data as SavedEnvironment;setRows(old=>selectedId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedId(saved.id);setStatus('Ambiente salvo no Supabase.');}
+  else if(result.data){const saved=result.data as SavedEnvironment;setRows(old=>selectedId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedId(saved.id);setEditorOpen(false);setViewMode(false);setStatus('✓ Ambiente salvo com sucesso.');}
   setBusy(false);
  }
  async function remove(){
@@ -250,7 +251,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
     if(result.error)setCircuitStatus('Erro ao salvar circuito: '+result.error.message);
-    else if(result.data){const saved=result.data as SavedCircuit;setSavedCircuits(old=>selectedCircuitId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedCircuitId(saved.id);try{await syncCircuitMaterials(project.id,saved);await syncUnifiedBudget(project.id);setCircuitStatus('Circuito e materiais atualizados automaticamente.')}catch(e){setCircuitStatus('Circuito salvo, mas a atualização dos materiais falhou: '+(e instanceof Error?e.message:String(e)))}}
+    else if(result.data){const saved=result.data as SavedCircuit;setSavedCircuits(old=>selectedCircuitId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedCircuitId(saved.id);setEditorOpen(false);setViewMode(false);try{await syncCircuitMaterials(project.id,saved);await syncUnifiedBudget(project.id);setCircuitStatus('Circuito e materiais atualizados automaticamente.')}catch(e){setCircuitStatus('Circuito salvo, mas a atualização dos materiais falhou: '+(e instanceof Error?e.message:String(e)))}}
     setCircuitBusy(false);
   }
   async function deleteCircuit(){
@@ -333,17 +334,19 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const electricalCandidate=candidates.find(x=>x.ampacityOk&&x.dropOk)||null;
  // Lista de correntes nominais para o estudo; não garante disponibilidade comercial.
  const breakerRatings=[6,10,16,20,25,32,40,50,63,80,100,125];
+ const kitchenLaundry=environmentOptions.some(r=>loadLinks.some(l=>l.environmentId===r.id)&&/cozinha|lavanderia|área de serviço/i.test(r.title+' '+String(r.data.kind||'')))||/cozinha|lavanderia|área de serviço/i.test(circuitTitle);
+ const minBreaker=(size:number)=>circuit==='lighting'?10:circuit==='tug'&&size===2.5&&kitchenLaundry?20:(circuit==='tug'||circuit==='tue')&&size===2.5?16:circuit==='tug'?16:6;
  // Integração: testar cada seção comercial em ordem crescente, exigindo capacidade,
  // queda de tensão e um In que satisfaça Ib ≤ In ≤ Iz.
  const coordinated=candidates.map(x=>({
    ...x,
    breaker:x.ampacityOk&&x.dropOk&&current!==null
-     ?(breakerRatings.find(inom=>inom>=(circuit==='lighting'?10: circuit==='tug'?16:6)&&inom>=current-1e-9&&inom<=x.iz+1e-9)??null)
+     ?(breakerRatings.find(inom=>inom>=minBreaker(x.size)&&inom>=current-1e-9&&inom<=x.iz+1e-9)??null)
      :null
  })).find(x=>x.breaker!==null)??null;
  const decisionSteps=candidates.filter(x=>coordinated?x.size<=coordinated.size:(electricalCandidate?x.size<=electricalCandidate.size: false)).map(x=>{
    const inRating=x.ampacityOk&&x.dropOk&&current!==null
-     ?(breakerRatings.find(inom=>inom>=(circuit==='lighting'?10: circuit==='tug'?16:6)&&inom>=current-1e-9&&inom<=x.iz+1e-9)??null):null;
+     ?(breakerRatings.find(inom=>inom>=minBreaker(x.size)&&inom>=current-1e-9&&inom<=x.iz+1e-9)??null):null;
    const reason=!x.ampacityOk?'Capacidade de corrente insuficiente':!x.dropOk?'Queda de tensão acima de 4%':inRating===null?'Sem disjuntor compatível na lista':'Atende aos três critérios';
    return {...x,inRating,reason};
  });
@@ -465,7 +468,7 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  };
  const numberBR=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:1});
  return <section className="panel"><div className="panel-heading"><h2>Quadro de distribuição</h2>{phases.length>1&&<button type="button" className="outline" disabled={busy||loading||!rows.length} onClick={balance}>Distribuir fases automaticamente</button>}</div>
- <p className="hint">Organize as ligações dos circuitos e confira a distribuição preliminar de corrente por fase.</p>
+ <p className="hint">Confira a distribuição por fase. O balanceamento automático depende de confirmação para não alterar ligações físicas já definidas.</p>
  {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:<div className="ep-distribution-list">{rows.map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;const poles=panelPoles(row,settings);const choices=optionsFor(row);return <div className="ep-distribution-item ep-panel-circuit" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div className="ep-panel-circuit-info"><strong>{row.title}</strong><small>Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · {poles} {poles===1?'polo':'polos'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {panelCurrent(row)?`${numberBR(panelCurrent(row))} A`:'—'}</small></div><label>Fase(s)<select value={connectionFor(row)} disabled={busy||choices.length===1} onChange={e=>void persistChanges([{id:row.id,connection:e.target.value as PanelConnection}])}>{choices.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
  <h3 className="ep-panel-subtitle">Resumo por fase</h3><div className="ep-summary-grid">{phases.map(p=><div key={p}><span>Soma das correntes dos circuitos na fase {p}</span><strong>{numberBR(sums[p])} A</strong></div>)}</div>
  <p className="hint">Somas indicativas de Ib por fase, sem simultaneidade, demanda ou cálculo da corrente real do alimentador. Circuitos bipolares e tripolares entram em cada fase envolvida. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p>{message&&<p role="status">{message}</p>}</section>;
@@ -491,7 +494,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const len=Number(length),voltage=Number(settings.voltage),pf=Number(settings.powerFactor);
  const sumPower=circuits.reduce((a,c)=>a+(Number(c.data.power)||0),0);
  const sumVA=circuits.reduce((a,c)=>a+(Number(c.data.powerVA)>0?Number(c.data.powerVA):Number(c.data.power)/pf||0),0);
- const demand=1; // Sem dados de demanda homologados, considerar 100% da carga.
+ const demand=1; // Sem base de demanda validada, 100% da carga. Não inventar fator redutor.
  const three=settings.supply==='three',loaded=three?'3':'2';
  const ib=sumVA/(voltage*(three?Math.sqrt(3):1));
  const method=settings.method,material=settings.conductorMaterial,insulation=settings.conductorInsulation;
@@ -539,7 +542,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  </div>
  <button type="button" className="secondary" onClick={()=>setDetails(v=>!v)}>{details?'Ocultar memória de cálculo':'Mostrar memória de cálculo'}</button>
  {details&&<div className="ep-summary-grid">
- {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada','100% (conservadora)'],['Corrente de projeto (Ib)',fmt(ib)+' A'],['Tensão',fmt(voltage)+' V'],['Método de instalação',method],['Condutores carregados',loaded],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+ {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada','100% (aguardando critério validado)'],['Corrente de projeto (Ib)',fmt(ib)+' A'],['Tensão',fmt(voltage)+' V'],['Método de instalação',method],['Condutores carregados',loaded],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
  </div>}
  {errors.map((e,i)=><p key={i} className="hint" role="alert">{e}</p>)}
  {!errors.length&&!chosen&&<p className="hint" role="alert">Nenhuma combinação válida de condutor e disjuntor foi encontrada nas tabelas disponíveis.</p>}
@@ -611,6 +614,16 @@ async function syncUnifiedBudget(projectId:string){
  const items=(m.data||[]).map(x=>({budget_id:budgetId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unit_price,item_type:x.item_type==='labor'?'labor':'material'}));
  if(items.length){const ins=await supabase.from('eletripro_budget_items').insert(items);if(ins.error)throw ins.error;}
 }
+function consolidateMaterialRows(items:MaterialRow[]):MaterialRow[]{
+ const grouped=new Map<string,MaterialRow>();
+ for(const item of items){
+  const key=[(item.item_type||'material'),String(item.description||'').trim().normalize('NFC').toLocaleLowerCase('pt-BR'),String(item.unit||'').trim().toLocaleLowerCase('pt-BR'),Number(item.unit_price||0)].join('\u0001');
+  const old=grouped.get(key);
+  if(old)grouped.set(key,{...old,quantity:Number(old.quantity||0)+Number(item.quantity||0)});
+  else grouped.set(key,{...item,quantity:Number(item.quantity||0)});
+ }
+ return [...grouped.values()].sort((a,b)=>a.description.localeCompare(b.description,'pt-BR',{sensitivity:'base',numeric:true}));
+}
 function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,accent}:{clientId:string;userId:string;localBudget:BudgetItem[];client:Client;professional:string;logo:string;accent:string}){
  const [rows,setRows]=useState<MaterialRow[]>([]),[projectId,setProjectId]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState('');
  const [description,setDescription]=useState(''),[quantity,setQuantity]=useState('1'),[unit,setUnit]=useState('un'),[unitPrice,setUnitPrice]=useState('0');
@@ -642,7 +655,7 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
    :await supabase.from('eletripro_materials').insert({project_id:projectId,...payload});
   setBusy(false);
   if(result.error){setStatus('Erro ao salvar: '+result.error.message);return}
-  try{await syncUnifiedBudget(projectId)}catch(e){setStatus('Material salvo, mas orçamento não sincronizado: '+String(e))}reset();setRefreshCount(x=>x+1);
+  try{await syncUnifiedBudget(projectId)}catch(e){setStatus('Material salvo, mas orçamento não sincronizado: '+String(e))}reset();setStatus('✓ Material salvo com sucesso.');setRefreshCount(x=>x+1);
  }
  async function remove(row:MaterialRow){
   if(!supabase||!projectId||busy||!window.confirm('Excluir o material '+row.description+'?'))return;
@@ -671,7 +684,8 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
   try{await syncUnifiedBudget(projectId)}catch(e){setStatus('Importação salva, mas orçamento não sincronizado: '+String(e))}setRefreshCount(x=>x+1);
  }
  return <section className="panel"><div className="panel-heading"><div><h2>Materiais e mão de obra</h2></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Incluir item</button></div>
- {status&&<p className="hint" role="status">{status}</p>}
+ {status&&<p className="hint" role="status" style={status.startsWith('✓')?{color:'#22c55e'}:undefined}>{status}</p>}
+ <h3>Resumo consolidado</h3><div className="ep-record-list">{consolidateMaterialRows(rows).map((r,i)=><div className="ep-material-record" key={i}><div className="ep-material-info"><strong>{r.description}</strong><span>{reportNum(r.quantity)} {r.unit} · {moneyBR(Number(r.quantity)*Number(r.unit_price))}</span></div></div>)}</div><h3>Registros individuais (edição)</h3>
  <div className="ep-record-list">{rows.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,"0")}</span><div className="ep-material-info"><strong>{r.item_type==='labor'?'Mão de obra · ':''}{r.description}</strong><span>{Number(r.quantity).toLocaleString("pt-BR",{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price));setItemType(r.item_type||'material')}}>Editar</button><button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></div></div>)}</div>
 
  {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
@@ -691,7 +705,7 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
  <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportValues} onChange={e=>setExportValues(e.target.checked)}/> Valores</label>
  </div>
  <button type="button" className="primary" disabled={busy||(!exportMaterials&&!exportLabor)} onClick={()=>void (async()=>{
-  const selected=rows.filter(r=>r.item_type==='labor'?exportLabor:exportMaterials).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
+  const selected=consolidateMaterialRows(rows.filter(r=>r.item_type==='labor'?exportLabor:exportMaterials)).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
   if(!selected.length){setStatus('Não há itens das categorias selecionadas para exportar.');return;}
   setBusy(true);setStatus('Gerando PDF...');
   try{
@@ -928,7 +942,7 @@ function TechnicalReport({client,userId,professional,logo,accent,settings}:{clie
      ['Critério de demanda / observações',reportText(feeder?.notes)]
     ]:[['Situação','Dimensionamento do alimentador ainda não cadastrado']]);
    }
-   const chosen=materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials)).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
+   const chosen=consolidateMaterialRows(materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials))).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
    if(options.materials||options.labor){
     add('Materiais e mão de obra',['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])]),'materials');
    }
