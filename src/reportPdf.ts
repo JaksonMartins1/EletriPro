@@ -29,24 +29,28 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
   ensure(120);y+=46;text(section.title,left,y,23,true);y+=16;ctx.strokeStyle=accent;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+contentW,y);ctx.stroke();y+=22;
   const material=section.kind==='materials';const cols=section.headers.length;
   let widths:number[];
-  if(material){widths=cols===6?[112,490,105,80,132,135]:[130,690,120,114]}else if(section.title==='Circuitos dimensionados'){widths=[230,260,170,190,204]}else if(section.title==='Quadro de distribuição'){widths=[235,125,180,175,339]}else if(cols===2)widths=[330,contentW-330];else widths=Array(cols).fill(contentW/cols);
+  if(material){widths=cols===6?[112,490,105,80,132,135]:[130,690,120,114]}else if(section.title==='Circuitos dimensionados'){widths=[230,260,170,190,204]}else if(section.title==='Quadro de distribuição'){widths=[235,125,180,175,339]}else if(section.title==='Circuitos da instalação existente'&&cols===8)widths=[160,90,120,125,120,105,110,224];else if(section.title==='Proposta preliminar de adequação'&&cols===3)widths=[200,270,contentW-470];else if(cols===2)widths=[330,contentW-330];else widths=Array(cols).fill(contentW/cols);
   const sum=widths.reduce((a,b)=>a+b,0);widths=widths.map(w=>w*contentW/sum);
-  const header=()=>{ensure(42);ctx.fillStyle=accent;ctx.globalAlpha=0.13;ctx.fillRect(left,y,contentW,39);ctx.globalAlpha=1;let x=left;section.headers.forEach((h,i)=>{text(h,x+widths[i]/2,y+26,15,true,'center');x+=widths[i]});line(left,y+39,left+contentW,y+39);y+=39};
+  const header=()=>{
+   const headerLines=section.headers.map((h,i)=>wrap(h,widths[i]-12,14));
+   const hh=Math.max(40,...headerLines.map(l=>l.length*18+12));ensure(hh);
+   ctx.fillStyle=accent;ctx.globalAlpha=0.13;ctx.fillRect(left,y,contentW,hh);ctx.globalAlpha=1;
+   let x=left;headerLines.forEach((ls,i)=>{ls.forEach((ln,j)=>text(ln,x+widths[i]/2,y+19+j*18,14,true,'center'));x+=widths[i]});
+   line(left,y+hh,left+contentW,y+hh);y+=hh;
+  };
   header();
   if(!section.rows.length){text('Nenhum registro cadastrado',left+14,y+26,16);y+=42;continue}
   for(const row of section.rows){
-   const values=row.map(txt);let fontSize=material?15:16;const descriptions=material?values[1]:'';
-   if(material){font(15);while(fontSize>12&&ctx.measureText(descriptions).width>widths[1]-12){fontSize-=0.5;font(fontSize)}}
-   const centered=!material&&(section.title==='Quadro de distribuição'||section.title==='Circuitos dimensionados'||section.title==='Parâmetros da instalação');
-   const lines=values.map((v,i)=>(material&&i===1)||(section.title==='Circuitos dimensionados'&&i===1)?[v]:wrap(v,widths[i]-18,material?15:16));
-   const h=material?39:Math.max(39,...lines.map(l=>l.length*21+15));
+   const values=row.map(txt);
+   const fontSize=section.headers.length>=7?13:15;
+   const lines=values.map((v,i)=>wrap(v,widths[i]-18,fontSize));
+   const h=Math.max(40,...lines.map(l=>l.length*19+16));
    if(y+h>a4.h-bottom){start();text(section.title+' (continuação)',left,y+12,18,true);y+=26;header()}
    let x=left;
    for(let i=0;i<cols;i++){
     ctx.strokeStyle='#cbd2da';ctx.strokeRect(x,y,widths[i],h);
-    const sz=material&&i===1?fontSize:material?15:16;
-    if(material){font(sz);ctx.fillStyle='#17212e';ctx.textAlign='center';ctx.fillText(values[i],x+widths[i]/2,y+Math.min(h-10,25),widths[i]-12)}
-    else lines[i].forEach((ln,j)=>{const size=section.title==='Circuitos dimensionados'&&i===1?Math.min(sz,Math.max(12,sz*(widths[i]-16)/Math.max(1,ctx.measureText(ln).width))):sz;text(ln,centered&&(section.title!=='Parâmetros da instalação'||i===1)&&i>0?x+widths[i]/2:x+10,y+25+j*21,size,false,centered&&(section.title!=='Parâmetros da instalação'||i===1)&&i>0?'center':'left')});
+    const recommendation=section.headers[i]?.trim().toLowerCase()==='recomendação técnica';
+    lines[i].forEach((ln,j)=>text(ln,recommendation?x+9:x+widths[i]/2,y+24+j*19,fontSize,false,recommendation?'left':'center'));
     x+=widths[i];
    }
    y+=h;
