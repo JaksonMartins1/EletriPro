@@ -533,7 +533,7 @@ async function syncUnifiedBudget(projectId:string){
  const items=(m.data||[]).map(x=>({budget_id:budgetId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unit_price,item_type:x.item_type==='labor'?'labor':'material'}));
  if(items.length){const ins=await supabase.from('eletripro_budget_items').insert(items);if(ins.error)throw ins.error;}
 }
-function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:string;localBudget:BudgetItem[]}){
+function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,accent}:{clientId:string;userId:string;localBudget:BudgetItem[];client:Client;professional:string;logo:string;accent:string}){
  const [rows,setRows]=useState<MaterialRow[]>([]),[projectId,setProjectId]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState('');
  const [description,setDescription]=useState(''),[quantity,setQuantity]=useState('1'),[unit,setUnit]=useState('un'),[unitPrice,setUnitPrice]=useState('0');
  const [editingId,setEditingId]=useState<string|null>(null);
@@ -595,7 +595,7 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
  return <section className="panel"><div className="panel-heading"><div><h2>Materiais e mão de obra</h2></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Incluir item</button></div>
  {status&&<p className="hint" role="status">{status}</p>}
  <div className="ep-record-list">{rows.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,"0")}</span><div className="ep-material-info"><strong>{r.item_type==='labor'?'Mão de obra · ':''}{r.description}</strong><span>{Number(r.quantity).toLocaleString("pt-BR",{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price));setItemType(r.item_type||'material')}}>Editar</button><button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></div></div>)}</div>
- <div className="ep-material-tools"><button type="button" className="outline" disabled={busy||!projectId} onClick={()=>void consolidateAll()}>Reconciliar materiais dos circuitos</button><p className="hint">Os materiais são atualizados automaticamente ao salvar ou excluir circuitos. Use este botão apenas para reconciliar dados anteriores. Revise as quantidades e os percursos reais.</p></div>
+
  {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
  <div className="ep-total-highlight"><span>Total de materiais e mão de obra</span><strong>{moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></div>
  {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)reset()}}><div className="panel sizing-form ep-editor-card" role="dialog" aria-modal={true} aria-label={editingId?'Editar material':'Cadastrar material'}><div className="ep-editor-heading"><h3>{editingId?'Editar material':'Cadastrar material'}</h3><button type="button" className="ep-close" aria-label="Fechar" onClick={reset} disabled={busy}><X size={20}/></button></div>
@@ -612,15 +612,18 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
  <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportLabor} onChange={e=>setExportLabor(e.target.checked)}/> Mão de obra</label>
  <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportValues} onChange={e=>setExportValues(e.target.checked)}/> Valores</label>
  </div>
- <button type="button" className="primary" disabled={busy||(!exportMaterials&&!exportLabor)} onClick={()=>{
-  const selected=rows.filter(r=>(r.item_type==='labor'?exportLabor:exportMaterials));
-  if(!selected.length){setStatus('Não há itens das categorias selecionadas para exportar.');return}
-  const escapeCsv=(v:unknown)=>'"'+String(v??'').replace(/"/g,'""')+'"';
-  const cols=['Categoria','Descrição','Quantidade','Unidade',...(exportValues?['Preço unitário (R$)','Subtotal (R$)']:[])];
-  const lines=[cols.map(escapeCsv).join(';'),...selected.map(r=>[r.item_type==='labor'?'Mão de obra':'Material',r.description,Number(r.quantity).toLocaleString('pt-BR',{useGrouping:false,maximumFractionDigits:3}),r.unit,...(exportValues?[Number(r.unit_price).toFixed(2).replace('.',','),(Number(r.quantity)*Number(r.unit_price)).toFixed(2).replace('.',',')]:[])].map(escapeCsv).join(';'))];
-  if(exportValues)lines.push(['TOTAL','','','', '',selected.reduce((a,r)=>a+Number(r.quantity)*Number(r.unit_price),0).toFixed(2).replace('.',',')].map(escapeCsv).join(';'));
-  const blob=new Blob(['\uFEFF'+lines.join('\r\n')],{type:'text/csv;charset=utf-8'});const url=URL.createObjectURL(blob);const link=document.createElement('a');link.href=url;link.download='EletriPro-lista-materiais.csv';document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
- }}>Exportar CSV</button>
+ <button type="button" className="primary" disabled={busy||(!exportMaterials&&!exportLabor)} onClick={()=>void (async()=>{
+  const selected=rows.filter(r=>r.item_type==='labor'?exportLabor:exportMaterials);
+  if(!selected.length){setStatus('Não há itens das categorias selecionadas para exportar.');return;}
+  setBusy(true);setStatus('Gerando PDF...');
+  try{
+   const headers=['Categoria','Descrição','Quantidade','Unidade',...(exportValues?['Preço unitário','Subtotal']:[])];
+   const data=selected.map(r=>[r.item_type==='labor'?'Mão de obra':'Material',r.description,reportNum(r.quantity),r.unit,...(exportValues?[moneyBR(Number(r.unit_price)||0),moneyBR((Number(r.quantity)||0)*(Number(r.unit_price)||0))]:[])]);
+   const total=exportValues?moneyBR(selected.reduce((a,r)=>a+(Number(r.quantity)||0)*(Number(r.unit_price)||0),0)):undefined;
+   await downloadTechnicalPdf({company:professional||'EletriPro',logo,accent,client:client.name,phone:client.phone||'',email:client.email||'',sections:[{title:'Materiais e mão de obra',headers,rows:data,kind:'materials'}],total},`EletriPro-Materiais-${client.name.replace(/[^a-zA-Z0-9À-ÿ_-]+/g,'-')}.pdf`);
+   setStatus('PDF gerado com sucesso.');
+  }catch(e){setStatus('Erro ao gerar PDF: '+(e instanceof Error?e.message:String(e)))}finally{setBusy(false)}
+ })()}>Exportar PDF</button>
  </div>
  {localBudget.length>0&&<div style={{marginTop:16}}><button className="outline" disabled={busy||!projectId} onClick={()=>void importBudget()}>Importar {localBudget.length} itens do orçamento local</button><p className="hint">Importação opcional. Confira duplicidades antes de importar novamente. O orçamento local não será apagado.</p></div>}
  </section>
@@ -834,7 +837,7 @@ function TechnicalReport({client,userId,professional,logo,accent,settings}:{clie
    if(options.environments)add('Ambientes',['Ambiente','Características'],rooms.map(r=>{const a=r.data||{},estimate=estimateRoom(r);return [r.title,`Tipo: ${reportText(a.kind)} | Área: ${reportNum(estimate?.area??a.area)} m² | Dimensões: ${reportNum(a.width)} × ${reportNum(a.length)} m | Perímetro: ${estimate?reportNum(estimate.perimeter)+' m':'Não informado'} | Iluminação: ${estimate?reportNum(estimate.lighting)+' VA':'Não informado'} | TUG: ${estimate?.outlets??'Não informado'} ponto(s), ${estimate?.tug===null?'A definir':reportNum(estimate?.tug)+' VA'}${a.notes?' | Observações: '+a.notes:''}`]}));
    const result=(c:SavedCircuit)=>(c.data.results||{}) as Record<string,unknown>;
    if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type||( /iluminaç[aã]o|lighting/i.test(c.title)?'lighting':undefined)),reportNum(c.data.power),reportText(result(c).breaker),reportText(result(c).selectedSection)]));
-   if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Corrente de Projeto (A)'],[...circuits].sort((a,b)=>(Number(result(b).breaker)||0)-(Number(result(a).breaker)||0)).map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportText(result(c).current)]}));
+   if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Corrente de Projeto (A)'],[...circuits].sort((a,b)=>(Number(result(b).breaker)||0)-(Number(result(a).breaker)||0)).map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportNum(result(c).current)]}));
    const chosen=materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials));
    if(options.materials||options.labor){
     add('Materiais e mão de obra',['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])]),'materials');
@@ -997,7 +1000,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
 {tab==='Relatórios'&&activeClient&&<TechnicalReport key={'report-'+activeClientId} client={activeClient} userId={session.user.id} professional={professional} logo={logo} accent={accent} settings={installationSettings}/>}
-{tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/></div>}
+{tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems} client={activeClient} professional={professional} logo={logo} accent={accent}/></div>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
  <div className="ep-workflow-head"><div><h2>Situação do cliente</h2><p>{workflowClient.name}</p></div><button className="outline" onClick={()=>setWorkflowClient(null)} disabled={workflowBusy} aria-label="Fechar"><X size={18}/></button></div>
