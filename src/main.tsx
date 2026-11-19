@@ -628,6 +628,7 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
  const [rows,setRows]=useState<MaterialRow[]>([]),[projectId,setProjectId]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState('');
  const [description,setDescription]=useState(''),[quantity,setQuantity]=useState('1'),[unit,setUnit]=useState('un'),[unitPrice,setUnitPrice]=useState('0');
  const [editingId,setEditingId]=useState<string|null>(null);
+ const [selectedGroup,setSelectedGroup]=useState<MaterialRow[]|null>(null);
  const [editorOpen,setEditorOpen]=useState(false);
  const [refreshCount,setRefreshCount]=useState(0);
  const [itemType,setItemType]=useState<'material'|'labor'>('material');
@@ -657,6 +658,23 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
   if(result.error){setStatus('Erro ao salvar: '+result.error.message);return}
   try{await syncUnifiedBudget(projectId)}catch(e){setStatus('Material salvo, mas orçamento não sincronizado: '+String(e))}reset();setStatus('✓ Material salvo com sucesso.');setRefreshCount(x=>x+1);
  }
+ const sameGroup=(a:MaterialRow,b:MaterialRow)=>
+  (a.item_type||'material')===(b.item_type||'material')&&
+  String(a.description||'').trim().normalize('NFC').toLocaleLowerCase('pt-BR')===String(b.description||'').trim().normalize('NFC').toLocaleLowerCase('pt-BR')&&
+  String(a.unit||'').trim().toLocaleLowerCase('pt-BR')===String(b.unit||'').trim().toLocaleLowerCase('pt-BR')&&
+  Number(a.unit_price||0)===Number(b.unit_price||0);
+ const openEditor=(r:MaterialRow)=>{setSelectedGroup(null);setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price));setItemType(r.item_type||'material')};
+ async function removeGroup(group:MaterialRow[]){
+  if(!supabase||!projectId||busy||!group.length||!window.confirm(`Excluir ${group.length} registro(s) de \"${group[0].description}\"? Esta ação remove todos os registros que compõem a linha agrupada.`))return;
+  setBusy(true);setStatus('Excluindo grupo...');
+  try{
+   const ids=group.map(r=>r.id);
+   const result=await supabase.from('eletripro_materials').delete().eq('project_id',projectId).in('id',ids);
+   if(result.error)throw result.error;
+   await syncUnifiedBudget(projectId);
+   setSelectedGroup(null);setStatus('✓ Grupo excluído com sucesso.');setRefreshCount(x=>x+1);
+  }catch(e){setStatus('Erro ao excluir grupo: '+String(e))}finally{setBusy(false)}
+ }
  async function remove(row:MaterialRow){
   if(!supabase||!projectId||busy||!window.confirm('Excluir o material '+row.description+'?'))return;
   setBusy(true);const result=await supabase.from('eletripro_materials').delete().eq('id',row.id).eq('project_id',projectId);
@@ -685,8 +703,21 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
  }
  return <section className="panel"><div className="panel-heading"><div><h2>Materiais e mão de obra</h2></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Incluir item</button></div>
  {status&&<p className="hint" role="status" style={status.startsWith('✓')?{color:'#22c55e'}:undefined}>{status}</p>}
- <h3>Resumo consolidado</h3><div className="ep-record-list">{consolidateMaterialRows(rows).map((r,i)=><div className="ep-material-record" key={i}><div className="ep-material-info"><strong>{r.description}</strong><span>{reportNum(r.quantity)} {r.unit} · {moneyBR(Number(r.quantity)*Number(r.unit_price))}</span></div></div>)}</div><h3>Registros individuais (edição)</h3>
- <div className="ep-record-list">{rows.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,"0")}</span><div className="ep-material-info"><strong>{r.item_type==='labor'?'Mão de obra · ':''}{r.description}</strong><span>{Number(r.quantity).toLocaleString("pt-BR",{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price));setItemType(r.item_type||'material')}}>Editar</button><button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></div></div>)}</div>
+ <div className="ep-record-list">{consolidateMaterialRows(rows).map((r,index)=>{
+  const group=rows.filter(item=>sameGroup(item,r));
+  return <div className="ep-material-record" key={group.map(item=>item.id).join('-')}>
+   <span className="ep-record-number">{String(index+1).padStart(2,'0')}</span>
+   <div className="ep-material-info"><strong>{r.item_type==='labor'?'Mão de obra · ':''}{r.description}</strong>
+    <span>{Number(r.quantity).toLocaleString('pt-BR',{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span>
+   </div>
+   <div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>group.length===1?openEditor(group[0]):setSelectedGroup(group)}>Editar</button>
+    <button className="outline" disabled={busy} onClick={()=>void removeGroup(group)}>Excluir</button></div>
+  </div>})}</div>
+ {selectedGroup&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)setSelectedGroup(null)}}><div className="panel sizing-form ep-editor-card" role="dialog" aria-modal={true} aria-label="Editar itens agrupados">
+  <div className="ep-editor-heading"><h3>Editar itens do grupo</h3><button type="button" className="ep-close" aria-label="Fechar" onClick={()=>setSelectedGroup(null)}><X size={20}/></button></div>
+  <p className="hint">Este grupo reúne {selectedGroup.length} registros. Selecione um registro para editar sem alterar os demais.</p>
+  <div className="ep-record-list">{selectedGroup.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,'0')}</span><div className="ep-material-info"><strong>{r.description}</strong><span>{reportNum(r.quantity)} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" onClick={()=>openEditor(r)}>Editar</button><button className="outline" onClick={()=>{setSelectedGroup(null);void remove(r)}}>Excluir</button></div></div>)}</div>
+ </div></div>}
 
  {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
  <div className="ep-total-highlight"><span>Total de materiais e mão de obra</span><strong>{moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></div>
