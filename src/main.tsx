@@ -474,7 +474,7 @@ const panelCurrent=(row:SavedCircuit)=>{const results=(row.data.results||{}) as 
 const feederCircuitElectrical=(row:SavedCircuit,settings:InstallationSettings)=>{
  const poles=panelPoles(row,settings);
  const va=demandCircuitVA(row,Number(settings.powerFactor));
- const vfn=Number(settings.voltageFN)||Number(settings.voltage);
+ const vfn=settings.supply==='single'?Number(settings.voltage):(Number(settings.voltageFN)||Number(settings.voltage));
  const vff=Number(settings.voltageFF);
  const voltage=poles===1?vfn:vff;
  const divisor=poles===3?Math.sqrt(3)*voltage:voltage;
@@ -629,8 +629,12 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const demandTotals=Object.fromEntries(demandCategories.map(k=>[k,demandAudit.filter(x=>x.category===k).reduce((a,x)=>a+x.va,0)])) as Record<DemandCategory,number>;
  const auditIssues=demandAudit.flatMap(x=>x.issues.map(issue=>`${x.c.title}: ${issue}`));
  const demand=sumVA>0?demandedVA/sumVA:1; // Sem base de demanda validada, 100% da carga. Não inventar fator redutor.
- // Alimentador bifásico L1+L2+N: adota conservadoramente três condutores carregados.
- const three=settings.supply==='three',loaded=settings.supply==='single'?'2':'3';
+ // NBR 5410, Tabela 46: FN = 2; duas fases + N = 3; três fases + N = 3 ou 4.
+ // Para trifásico com neutro e conteúdo harmônico não informado, reserva conservadora
+ // para 4 carregados por fator 0,86 sobre a tabela de 3 carregados (6.2.5.6.1).
+ const loaded=settings.supply==='single'?'2':'3';
+ const harmonicNeutralFactor=settings.supply==='three'?0.86:1;
+ const loadedDescription=settings.supply==='three'?'4 (hipótese conservadora; tabela 3 × 0,86)':loaded;
  const phaseDemand=phaseCurrents(circuits,settings,effectiveFactor);
  const phaseUpperBounds=phaseCurrentUpperBounds(circuits,settings,effectiveFactor);
  // A demanda documentada permanece informativa até que a aplicabilidade da norma seja verificada.
@@ -694,8 +698,8 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const feederDropBudget=2;
  const rho=0.0225;
  const candidates=Object.entries(table||{}).map(([section,base])=>{
-  const size=Number(section),iz=base*(ft||0)*(fg||0);
-  const drop=2*ib*rho*len/size; // Limite resistivo conservador para percurso de ida e retorno; requer validação do esquema real.
+  const size=Number(section),iz=base*(ft||0)*(fg||0)*harmonicNeutralFactor;
+  const drop=2*ib*rho*len/size; // Estimativa resistiva superior simplificada; não substitui cálculo vetorial de queda.
   const dropPercent=100*drop/(voltageFN>0?voltageFN:voltage);
   const breaker=feederBreakers.find(n=>n>=ib-1e-9&&n<=iz+1e-9);
   return {size,iz,dropPercent,breaker};
@@ -712,7 +716,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
   try{
    const pr=await supabase.from('eletripro_projects').select('installation').eq('id',projectId).eq('owner_id',userId).single();
    if(pr.error)throw pr.error;
-   const installation={...(pr.data?.installation||{}),demandJustification,demandGroupFactors:groupFactors,demandMode,feeder:{length,demandFactor:String(demand),voltage:String(voltage),powerFactor:String(pf),maxDrop:String(feederDropBudget),groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:demandJustification||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',calculation:{power:sumPower,demand,demandedVA,phaseDemand,phaseUpperBounds,phaseSizingBounds,neutralIb,neutralFundamental,feederTopology,supply:settings.supply,voltageFN,voltageFF,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
+   const installation={...(pr.data?.installation||{}),demandJustification,demandGroupFactors:groupFactors,demandMode,feeder:{length,demandFactor:String(demand),voltage:String(voltage),powerFactor:String(pf),maxDrop:String(feederDropBudget),groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:demandJustification||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',calculation:{power:sumPower,demand,demandedVA,phaseDemand,phaseUpperBounds,phaseSizingBounds,neutralIb,neutralFundamental,feederTopology,supply:settings.supply,voltageFN,voltageFF,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded:loadedDescription,harmonicNeutralFactor,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
    const res=await supabase.from('eletripro_projects').update({installation,updated_at:new Date().toISOString()}).eq('id',projectId).eq('owner_id',userId);
    if(res.error)throw res.error;setMessage('✓ Pré-dimensionamento salvo. Não liberado para execução sem validação técnica da queda total, curto-circuito e proteção.');
   }catch(e){setMessage('Erro ao salvar: '+String(e))}finally{setSaving(false)}
@@ -742,7 +746,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  </div>}
  {details&&<div className="panel"><h3>Rastreabilidade da seleção do alimentador</h3><p className="hint">As alternativas são avaliadas pela corrente conservadora por fase, capacidade corrigida e queda resistiva estimada exclusivamente neste trecho. A coluna decisão indica por que uma seção foi descartada. A aprovação é preliminar: reserva 2% de queda para este trecho, mas não contempla curto-circuito, seletividade nem queda total.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Seção (mm²)</th><th>Iz corrigida (A)</th><th>Queda (%)</th><th>Disjuntor (A)</th><th>Decisão</th></tr></thead><tbody>{candidates.map(x=><tr key={x.size}><td>{fmt(x.size)}</td><td>{fmt(x.iz)}</td><td>{fmt(x.dropPercent)}</td><td>{x.breaker?fmt(x.breaker):'—'}</td><td>{x.iz<ib?'Iz inferior à corrente de projeto':x.iz<neutralIb?'Neutro exige revisão':x.dropPercent>feederDropBudget?'Queda do trecho superior a '+feederDropBudget+'%':!x.breaker?'Sem disjuntor compatível':chosen?.size===x.size?'Primeira alternativa preliminar':'Alternativa possível'}</td></tr>)}</tbody></table></div></div>}
  {details&&<div className="ep-summary-grid">
- {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada',fmt(demand*100)+' % (média ponderada)'],['Potência aparente demandada',fmt(demandedVA)+' VA'],['Corrente de projeto conservadora (Ib, 100% das cargas)',fmt(ib)+' A'],['Corrente estimada no neutro (fundamental)',fmt(neutralFundamental)+' A'],['Critério conservador para seção do neutro',fmt(neutralIb)+' A'],['Composição do alimentador',feederTopology],['Origem da composição','Fornecimento da concessionária (independente dos circuitos internos)'],...Object.entries(phaseDemand).map(([phase,current])=>['Fase '+phase+' — fasorial',fmt(current)+' A'] as [string,string]),...Object.entries(phaseUpperBounds).map(([phase,current])=>['Fase '+phase+' — limite conservador',fmt(current)+' A'] as [string,string]),...Object.entries(phaseSizingBounds).map(([phase,current])=>['Fase '+phase+' — limite para dimensionamento (100%)',fmt(current)+' A'] as [string,string][]),['Tensão dos circuitos',fmt(voltage)+' V'],['Tensão fase-neutro (VFN)',voltageFN>0?fmt(voltageFN)+' V':'não informada'],['Tensão fase-fase (VFF)',voltageFF>0?fmt(voltageFF)+' V':'não informada'],['Correntes recalculadas por ligação','FN: VFN; FF: VFF; trifásico: √3 × VFF'],['Método de instalação',method],['Condutores carregados (conservador)',loaded],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'],['Auditoria de conexões e proteções',errors.length?`${errors.length} pendência(s)`:'Sem pendências cadastrais'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
+ {([['Potência ativa dos circuitos',fmt(sumPower)+' W'],['Potência aparente considerada',fmt(sumVA)+' VA'],['Demanda adotada',fmt(demand*100)+' % (média ponderada)'],['Potência aparente demandada',fmt(demandedVA)+' VA'],['Corrente de projeto conservadora (Ib, 100% das cargas)',fmt(ib)+' A'],['Corrente estimada no neutro (fundamental)',fmt(neutralFundamental)+' A'],['Critério conservador para seção do neutro',fmt(neutralIb)+' A'],['Composição do alimentador',feederTopology],['Origem da composição','Fornecimento da concessionária (independente dos circuitos internos)'],...Object.entries(phaseDemand).map(([phase,current])=>['Fase '+phase+' — fasorial',fmt(current)+' A'] as [string,string]),...Object.entries(phaseUpperBounds).map(([phase,current])=>['Fase '+phase+' — limite conservador',fmt(current)+' A'] as [string,string]),...Object.entries(phaseSizingBounds).map(([phase,current])=>['Fase '+phase+' — limite para dimensionamento (100%)',fmt(current)+' A'] as [string,string][]),['Tensão geral cadastrada dos circuitos',fmt(voltage)+' V'],['Tensão fase-neutro (VFN)',settings.supply==='single'?fmt(voltage)+' V':voltageFN>0?fmt(voltageFN)+' V':'não informada'],['Tensão fase-fase (VFF)',settings.supply==='single'?'não aplicável':voltageFF>0?fmt(voltageFF)+' V':'não informada'],['Correntes recalculadas por ligação','FN: VFN; FF: VFF; trifásico: √3 × VFF'],['Método de instalação',method],['Condutores carregados (NBR 5410, Tabela 46)',loadedDescription],['Fator conservador de neutro harmônico',fmt(harmonicNeutralFactor)],['Temperatura',settings.temperature+' °C'],['Fator de temperatura',fmt(ft||0)],['Fator de agrupamento',fmt(fg||0)],['Capacidade corrigida (Iz)',chosen?fmt(chosen.iz)+' A':'—'],['Queda resistiva estimada',chosen?fmt(chosen.dropPercent)+' %':'—'],['Auditoria de conexões e proteções',errors.length?`${errors.length} pendência(s)`:'Sem pendências cadastrais'] ] as [string,string][]).map(([label,value])=><div key={label}><span>{label}</span><strong>{value}</strong></div>)}
  </div>}
  {errors.map((e,i)=><p key={i} className="hint" role="alert">{e}</p>)}
  {!errors.length&&!chosen&&<p className="hint" role="alert">Nenhuma combinação válida de condutor e disjuntor foi encontrada nas tabelas disponíveis.</p>}
