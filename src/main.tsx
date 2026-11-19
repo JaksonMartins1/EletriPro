@@ -671,6 +671,17 @@ type FeederForm={demandFactor:string;length:string;voltage:string;powerFactor:st
 const feederDefault:FeederForm={demandFactor:'1',length:'15',voltage:'',powerFactor:'',maxDrop:'4',groupCount:'1',neutralSection:'',breaker:'',notes:''};
 const feederBreakers=[10,16,20,25,32,40,50,63,80,100,125,160,200,225,250,315,400,500,630];
 const feederFormat=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:2});
+// Enquadramento indicativo extraído da tabela CELESC fornecida pelo usuário.
+// Não extrapolar para outras faixas, tensões, revisões ou trechos sem conferência da norma oficial.
+const celescEntryReference='Tabela de dimensionamento CELESC apresentada no projeto — confirmar edição vigente e notas aplicáveis';
+type CelescEntry={category:string;breakerIEC:number;entryPVC:number;entryXLPE:number;range:string};
+function celescEntryClassification(supply:string,installedKW:number):CelescEntry|null{
+ if(supply!=='two'||!Number.isFinite(installedKW))return null;
+ if(installedKW>15&&installedKW<=20)return {category:'B1',breakerIEC:50,entryPVC:10,entryXLPE:10,range:'15 < C ≤ 20 kW'};
+ if(installedKW>20&&installedKW<=25)return {category:'B2',breakerIEC:63,entryPVC:16,entryXLPE:10,range:'20 < C ≤ 25 kW'};
+ return null;
+}
+
 function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
  const [circuits,setCircuits]=useState<SavedCircuit[]>([]);
  const [length,setLength]=useState('15');
@@ -693,6 +704,11 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const voltageConfirmed=settings.supply==='single'||(voltageFN>0&&voltageFF>0&&voltageFF>voltageFN);
  const sumPower=circuits.reduce((a,c)=>a+(Number(c.data.power)||0),0);
  const sumVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf),0);
+ // A tabela CELESC usa carga instalada C em kW. Não usar a demanda reduzida do QD.
+ // Potência do circuito é tratada pelo cadastro como W; verificar dados de placa/fator de potência.
+ const installedKW=circuits.reduce((total,c)=>total+(Number(c.data.power)||0),0)/1000;
+ const celescEntry=(Math.abs(voltageFN-220)<=5&&Math.abs(voltageFF-380)<=8)?celescEntryClassification(settings.supply,installedKW):null;
+
  const autoResidential=automaticResidentialFactors(circuits,applianceEntries);
  const selectedFactors=demandMode==='external_table'?autoResidential.factors:groupFactors;
  const effectiveFactor=(c:SavedCircuit)=>demandMode==='conservative'?1:demandMode==='external_table'?autoResidential.factorForCircuit(c):groupDemandFactor(c,selectedFactors);
@@ -797,7 +813,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
   try{
    const pr=await supabase.from('eletripro_projects').select('installation').eq('id',projectId).eq('owner_id',userId).single();
    if(pr.error)throw pr.error;
-   const installation={...(pr.data?.installation||{}),demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,demandGroupFactors:selectedFactors,demandMode,demandAppliances:applianceEntries,applyDocumentedDemand:demandApplied,feeder:{length,demandFactor:String(appliedDemandFactor),voltage:String(voltage),powerFactor:String(pf),maxDrop:String(feederDropBudget),groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:(demandMode==='external_table'?externalResidentialReference:demandJustification)||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',calculation:{power:sumPower,demand:appliedDemandFactor,demandedVA:appliedDemandedVA,proposedDemandFactor:demand,proposedDemandVA:demandedVA,phaseDemand,phaseUpperBounds,phaseSizingBounds,demandApplied,demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,groupFactors:selectedFactors,automaticResidentialCircuitFactors:demandMode==='external_table'?circuits.map(c=>({id:c.id,title:c.title,category:autoResidential.kindFor(c),quantity:applianceEntries[c.id]?.quantity||0,factor:autoResidential.factorForCircuit(c)})):null,automaticResidentialAudit:demandMode==='external_table'?{installedKW:autoResidential.installedKW,heatingCount:autoResidential.heatingCount,stoveCount:autoResidential.stoveCount,ovenCount:autoResidential.ovenCount,airCount:autoResidential.airCount,stoveFactor:autoResidential.stove,ovenFactor:autoResidential.oven,source:externalResidentialReference,method:'fator específico por circuito, não fator único de TUE'}:null,neutralIb,neutralFundamental,feederTopology,supply:settings.supply,voltageFN,voltageFF,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded:loadedDescription,harmonicNeutralFactor,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
+   const installation={...(pr.data?.installation||{}),demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,demandGroupFactors:selectedFactors,demandMode,demandAppliances:applianceEntries,applyDocumentedDemand:demandApplied,feeder:{length,demandFactor:String(appliedDemandFactor),voltage:String(voltage),powerFactor:String(pf),maxDrop:String(feederDropBudget),groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:(demandMode==='external_table'?externalResidentialReference:demandJustification)||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',calculation:{celescEntry:celescEntry?{...celescEntry,installedKW,source:celescEntryReference}:null,power:sumPower,demand:appliedDemandFactor,demandedVA:appliedDemandedVA,proposedDemandFactor:demand,proposedDemandVA:demandedVA,phaseDemand,phaseUpperBounds,phaseSizingBounds,demandApplied,demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,groupFactors:selectedFactors,automaticResidentialCircuitFactors:demandMode==='external_table'?circuits.map(c=>({id:c.id,title:c.title,category:autoResidential.kindFor(c),quantity:applianceEntries[c.id]?.quantity||0,factor:autoResidential.factorForCircuit(c)})):null,automaticResidentialAudit:demandMode==='external_table'?{installedKW:autoResidential.installedKW,heatingCount:autoResidential.heatingCount,stoveCount:autoResidential.stoveCount,ovenCount:autoResidential.ovenCount,airCount:autoResidential.airCount,stoveFactor:autoResidential.stove,ovenFactor:autoResidential.oven,source:externalResidentialReference,method:'fator específico por circuito, não fator único de TUE'}:null,neutralIb,neutralFundamental,feederTopology,supply:settings.supply,voltageFN,voltageFF,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded:loadedDescription,harmonicNeutralFactor,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
    const res=await supabase.from('eletripro_projects').update({installation,updated_at:new Date().toISOString()}).eq('id',projectId).eq('owner_id',userId);
    if(res.error)throw res.error;setMessage('✓ Pré-dimensionamento salvo. Não liberado para execução sem validação técnica da queda total, curto-circuito e proteção.');
   }catch(e){setMessage('Erro ao salvar: '+String(e))}finally{setSaving(false)}
@@ -808,6 +824,19 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  <p className="hint" role="note">Tensão dos circuitos cadastrada: {fmt(voltage)} V. Alimentação: VFN {voltageFN>0?fmt(voltageFN):"não informada"} V; VFF {voltageFF>0?fmt(voltageFF):"não informada"} V. Os circuitos existentes não são convertidos automaticamente. Confira a tensão e a ligação de cada circuito antes do projeto executivo.</p>
  {loading?<p>Carregando circuitos...</p>:<>
  <div className="two"><label>Distância da caixa de medição até o QD (m)<input type="number" min="0.1" step="0.1" value={length} onChange={e=>{setLength(e.target.value);setMessage('')}}/></label></div>
+ <div className="panel" style={{marginBottom:16}}>
+ <h3>Enquadramento do padrão de entrada — CELESC (indicativo)</h3>
+ <p className="hint">Este quadro é independente do alimentador interno do QD. A categoria usa a carga instalada C, sem fatores de demanda. Fonte: {celescEntryReference}. A classificação não substitui a conferência da edição vigente, do trecho físico, das notas e da aprovação pela concessionária.</p>
+ <div className="ep-summary-grid">
+  <div><span>Carga instalada considerada</span><strong>{fmt(installedKW)} kW</strong></div>
+  <div><span>Categoria CELESC</span><strong>{celescEntry?.category||'Não determinada'}</strong></div>
+  <div><span>Disjuntor IEC/DIN do padrão</span><strong>{celescEntry?celescEntry.breakerIEC+' A':'—'}</strong></div>
+  <div><span>Ramal de entrada cobre PVC 70 °C</span><strong>{celescEntry?celescEntry.entryPVC+' mm²':'—'}</strong></div>
+  <div><span>Ramal de entrada cobre XLPE/EPR 90 °C</span><strong>{celescEntry?celescEntry.entryXLPE+' mm²':'—'}</strong></div>
+ </div>
+ {celescEntry?<p className="hint">Faixa: {celescEntry.range}. Os cabos indicados são os da coluna <strong>ramal de entrada</strong> da tabela apresentada, não os do trecho medição–QD. Disjuntor do padrão: {celescEntry.breakerIEC} A; disjuntor do QD: {chosen?chosen.breaker+' A':'a dimensionar'}.</p>:<p className="hint" role="status">A tabela conferida nesta implementação cobre apenas as faixas B1 e B2 de fornecimento bifásico 220/380 V. Para outros enquadramentos, consulte a tabela oficial completa; não há seleção automática presumida.</p>}
+ </div>
+ <h3>Alimentador interno — medição até QD (NBR 5410)</h3>
  <div className="ep-summary-grid">
  <div><span>Condutor de fase</span><strong>{chosen?fmt(chosen.size)+' mm²':'—'}</strong></div>
  <div><span>Disjuntor geral do QD</span><strong>{chosen?fmt(chosen.breaker||0)+' A':'—'}</strong></div>
@@ -1252,7 +1281,7 @@ function TechnicalReport({client,userId,professional,logo,accent,settings}:{clie
     const feeder=project?.installation?.feeder as (FeederForm&{calculation?:Record<string,unknown>})|undefined;
     const f=feeder?.calculation;
     add('Alimentador geral',['Parâmetro','Valor'],f?[
-     ['Potência demandada (W)',reportNum(f.power)],['Fator de demanda',reportText(f.demand)],
+     ['CELESC — categoria (indicativa)',reportText((f.celescEntry as Record<string,unknown>|null)?.category)],['CELESC — carga instalada (kW)',reportNum((f.celescEntry as Record<string,unknown>|null)?.installedKW)],['CELESC — disjuntor padrão IEC/DIN (A)',reportNum((f.celescEntry as Record<string,unknown>|null)?.breakerIEC)],['CELESC — ramal entrada PVC 70 °C (mm²)',reportNum((f.celescEntry as Record<string,unknown>|null)?.entryPVC)],['CELESC — ramal entrada XLPE/EPR 90 °C (mm²)',reportNum((f.celescEntry as Record<string,unknown>|null)?.entryXLPE)],['CELESC — referência e limites',reportText((f.celescEntry as Record<string,unknown>|null)?.source)],['Potência demandada (W)',reportNum(f.power)],['Fator de demanda',reportText(f.demand)],
      ['Corrente de projeto (A)',reportNum(f.ib)],['Condutor de fase (mm²)',reportNum(f.section)],
      ['Capacidade corrigida Iz (A)',reportNum(f.iz)],['Disjuntor geral (A)',reportNum(f.breaker)],
      ['Neutro (mm²)',reportNum(f.neutral)],['PE preliminar (mm²)',reportNum(f.pe)],
