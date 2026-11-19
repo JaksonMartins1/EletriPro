@@ -9,7 +9,7 @@ type BudgetChoice={id:string;title:string;amount:number};
 const statusNames:Record<WorkStatus,string>={awaiting:'Aguardando aprovação',approved:'Em execução / Aprovado',finished:'Executado / Finalizado'};
 const brl=(n:number)=>n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const monthLabel=(date:string)=>new Date(date+'T12:00:00').toLocaleDateString('pt-BR',{month:'long',year:'numeric'});
-const sections=[['Painel',LayoutDashboard],['Clientes',Users],['Tipo de instalação',Building2],['Dimensionamento',Calculator],['Ambientes',Ruler],['Materiais/Orçamentos',ClipboardList],['Personalização',Palette],['Meu Perfil',Users],['Assinatura',Crown]] as const;
+const sections=[['Painel',LayoutDashboard],['Clientes',Users],['Tipo de instalação',Building2],['Dimensionamento',Calculator],['Ambientes',Ruler],['Quadro de distribuição',ClipboardList],['Materiais/Orçamentos',ClipboardList],['Personalização',Palette],['Meu Perfil',Users],['Assinatura',Crown]] as const;
 const statesBR=['AC','AL','AP','AM','BA','CE','DF','ES','GO','MA','MT','MS','MG','PA','PB','PR','PE','PI','RJ','RN','RS','RO','RR','SC','SP','SE','TO'];
 const formatMobile=(v:string)=>{const d=v.replace(/\D/g,'').slice(0,11);return d.length>7?`(${d.slice(0,2)}) ${d.slice(2,7)}-${d.slice(7)}`:d.length>2?`(${d.slice(0,2)}) ${d.slice(2)}`:d;};
 const colors=['#a3a3a3','#eab308','#3b82f6','#22c55e','#a855f7'];
@@ -74,6 +74,28 @@ const moneyBR=(n:number)=>n.toLocaleString('pt-BR',{style:'currency',currency:'B
 // v0.7.20 — Ambientes persistidos por projeto; area geometrica, sem dimensionamento automatico de cargas.
 type SavedEnvironment={id:string;title:string;data:Record<string,unknown>};
 const environmentTypes=['Sala','Quarto','Cozinha','Banheiro','Lavanderia','Corredor','Garagem','Área externa','Escritório','Outro'];
+type RoomLoadKind='lighting'|'tug';
+function estimateRoom(room:SavedEnvironment){
+ const d=room.data||{},w=Number(d.width),l=Number(d.length),kind=String(d.kind||'Outro');
+ if(!(w>0&&l>0))return null;
+ const area=w*l,perimeter=2*(w+l);
+ // Valores de previsão em VA, sujeitos à revisão das condições particulares da NBR 5410.
+ const lighting=area<=6?100:100+60*Math.floor((area-6)/4+1e-9);
+ let outlets:number|null=null;
+ if(['Sala','Quarto','Escritório'].includes(kind))outlets=Math.ceil((perimeter-1e-9)/5);
+ else if(['Cozinha','Lavanderia'].includes(kind))outlets=Math.ceil((perimeter-1e-9)/3.5);
+ else if(kind==='Banheiro')outlets=1;
+ // Não inventar critérios automáticos para garagens, corredores e outras áreas.
+ const tug=outlets===null?null:['Cozinha','Lavanderia'].includes(kind)?Math.min(outlets,3)*600+Math.max(0,outlets-3)*100:kind==='Banheiro'?600:outlets*100;
+ return {area,perimeter,lighting,tug,outlets};
+}
+type CircuitLoadLink={environmentId:string;kind:RoomLoadKind};
+function linkedLoads(links:CircuitLoadLink[],rooms:SavedEnvironment[]){
+ const missing:string[]=[];let va=0;
+ for(const link of links){const room=rooms.find(r=>r.id===link.environmentId);if(!room){missing.push(link.environmentId);continue}
+ const result=estimateRoom(room);const value=result?.[link.kind];if(value===null||value===undefined){missing.push(room.title);continue}va+=value;}
+ return {va,missing};
+}
 function Environments({clientId,userId}:{clientId:string;userId:string}){
  const [rows,setRows]=useState<SavedEnvironment[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
@@ -171,7 +193,7 @@ type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
 function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings;clientId:string;userId:string}){
  const [editorOpen,setEditorOpen]=useState(false);
  const [viewMode,setViewMode]=useState(false);
- const [environmentId,setEnvironmentId]=useState(''),[environmentOptions,setEnvironmentOptions]=useState<SavedEnvironment[]>([]),[materialSending,setMaterialSending]=useState(false);
+ const [environmentId,setEnvironmentId]=useState(''),[loadLinks,setLoadLinks]=useState<CircuitLoadLink[]>([]),[loadMode,setLoadMode]=useState<'manual'|'rooms'>('manual'),[environmentOptions,setEnvironmentOptions]=useState<SavedEnvironment[]>([]),[materialSending,setMaterialSending]=useState(false);
  const [circuit,setCircuit]=useState('tug'),[power,setPower]=useState(''),[pf,setPf]=useState('1'),[length,setLength]=useState(''),[material,setMaterial]=useState('copper');
  const [wiring,setWiring]=useState('phase-neutral');
  const [insulation,setInsulation]=useState('PVC 70 °C'),[groupCount,setGroupCount]=useState('1');
@@ -183,11 +205,11 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   const [circuitLoading,setCircuitLoading]=useState(true);
   const circuitRequest=React.useRef(0);
   useEffect(()=>{if(!selectedCircuitId)return;const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!circuitBusy)clearCircuit()};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[selectedCircuitId,circuitBusy]);
-  const clearCircuit=()=>{setViewMode(false);setEditorOpen(false);setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf(settings.powerFactor);setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount(settings.groupCount);setEnvironmentId('');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
+  const clearCircuit=()=>{setViewMode(false);setEditorOpen(false);setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf(settings.powerFactor);setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount(settings.groupCount);setEnvironmentId('');setLoadLinks([]);setLoadMode('manual');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
   const selectSavedCircuit=(row:SavedCircuit)=>{
     const d=row.data||{};
     const val=(key:string,fallback:string)=>typeof d[key]==='string'?String(d[key]):fallback;
-    setEditorOpen(true);setViewMode(true);setEnvironmentId(val('environmentId',''));setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(settings.powerFactor);setLength(val('length',''));setMaterial(settings.conductorMaterial);setWiring(settings.wiring);setInsulation(settings.conductorInsulation);setGroupCount(val('groupCount',settings.groupCount));setCircuitStatus('Circuito carregado.');
+    setEditorOpen(true);setViewMode(true);setEnvironmentId(val('environmentId',''));setLoadLinks(Array.isArray(d.loadLinks)?(d.loadLinks as CircuitLoadLink[]):[]);setLoadMode(d.loadMode==='rooms'?'rooms':'manual');setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit','tug'));setPower(val('power',''));setPf(settings.powerFactor);setLength(val('length',''));setMaterial(settings.conductorMaterial);setWiring(settings.wiring);setInsulation(settings.conductorInsulation);setGroupCount(val('groupCount',settings.groupCount));setCircuitStatus('Circuito carregado.');
   };
   useEffect(()=>{
     const request=++circuitRequest.current;
@@ -214,11 +236,16 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     if(!supabase||circuitBusy||circuitLoading)return;
     const title=circuitTitle.trim();
     if(!title){setCircuitStatus('Informe o nome do circuito.');return}
-    if(!Number.isFinite(Number(power))||Number(power)<=0||!Number.isFinite(Number(length))||Number(length)<0){setCircuitStatus('Informe potência positiva e comprimento válido.');return}
+    if(!(loadMode==='rooms'?loadLinks.length>0&&roomCalculation.missing.length===0&&roomCalculation.va>0&&Number(settings.powerFactor)>0:Number.isFinite(Number(power))&&Number(power)>0)||!Number.isFinite(Number(length))||Number(length)<0){setCircuitStatus('Informe potência positiva e comprimento válido.');return}
+    if(loadMode==='rooms'){
+      const conflicts=savedCircuits.filter(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)).flatMap(x=>(x.data.loadLinks as CircuitLoadLink[]).filter(y=>loadLinks.some(z=>z.environmentId===y.environmentId&&z.kind===y.kind)).map(y=>x.title));
+      if(conflicts.length){setCircuitStatus('Carga já vinculada a outro circuito: '+[...new Set(conflicts)].join(', '));return}
+      if(circuit==='lighting'&&loadLinks.some(x=>x.kind!=='lighting')||circuit==='tug'&&loadLinks.some(x=>x.kind!=='tug')){setCircuitStatus('O tipo de carga deve corresponder ao tipo do circuito.');return}
+    }
     setCircuitBusy(true);setCircuitStatus('');
     const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
     if(pe||!project){setCircuitStatus(pe?'Erro: '+pe.message:'Salve primeiro o Tipo de instalação.');setCircuitBusy(false);return}
-    const data={environmentId:environmentId||null,circuit,power,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
+    const data={environmentId:environmentId||null,loadMode,loadLinks,power:powerForSizing,manualPower:power,powerVA:loadMode==='rooms'?roomCalculation.va:null,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount,panelPhase:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelPhase||'A'):'A',results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings};
     const result=selectedCircuitId
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
@@ -236,30 +263,32 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     setCircuitBusy(false);
   }
 
-  async function sendSizingMaterials(items:BudgetItem[]){
-    if(!supabase||materialSending)return;
-    if(!window.confirm(`Salvar ${items.length} itens do dimensionamento diretamente em Materiais? Revise duplicidades e quantidades depois.`))return;
-    setMaterialSending(true);setCircuitStatus('Salvando materiais no Supabase...');
-    try{
-      const projectId=await ensureEletriProject(clientId,userId);
-      const result=await supabase.from('eletripro_materials').insert(items.map(x=>({project_id:projectId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unitPrice})));
-      if(result.error)throw result.error;
-      setCircuitStatus(`${items.length} itens adicionados a Materiais no Supabase. Abra a aba Materiais para revisar quantidades e preços.`);
-    }catch(e){setCircuitStatus('Erro ao enviar materiais: '+(e instanceof Error?e.message:String(e)));}
-    finally{setMaterialSending(false)}
-  }
  async function sendSizingMaterials(items:BudgetItem[]){
-   if(!supabase||materialSending)return;
-   if(!window.confirm(`Salvar ${items.length} itens do dimensionamento diretamente em Materiais? Confira duplicidades e quantidades depois.`))return;
-   setMaterialSending(true);setCircuitStatus('Salvando materiais...');
+   if(!supabase||materialSending||!selectedCircuitId)return;
+   if(!window.confirm('Atualizar a lista de materiais deste circuito? Preços já cadastrados serão preservados.'))return;
+   setMaterialSending(true);setCircuitStatus('Consolidando materiais...');
    try{
      const projectId=await ensureEletriProject(clientId,userId);
-     const r=await supabase.from('eletripro_materials').insert(items.map(x=>({project_id:projectId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unitPrice})));
-     if(r.error)throw r.error;
-     setCircuitStatus(`${items.length} itens adicionados a Materiais no Supabase. Revise os preços e quantidades na aba Materiais.`);
-   }catch(e){setCircuitStatus('Erro ao salvar materiais: '+(e instanceof Error?e.message:String(e)))}
+     const found=await supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',projectId).not('source_key','is',null);
+     if(found.error)throw found.error;
+     const existing=(found.data||[]) as GeneratedMaterial[];
+     const circuitRows=existing.filter(x=>x.source_key?.startsWith(selectedCircuitId+':'));
+     const desired=items.map((item,i)=>({...item,source_key:`${selectedCircuitId}:${item.description.includes('Disjuntor')?'breaker':item.description.includes('(Fase)')?'phase':item.description.includes('(Neutro)')?'neutral':item.description.includes('(Retorno)')?'return':item.description.includes('(Proteção (PE))')?'pe':i}`}));
+     for(const item of desired){
+       const old=existing.find(x=>x.source_key===item.source_key);
+       const payload={description:item.description,quantity:item.quantity,unit:item.unit};
+       const result=old?await supabase.from('eletripro_materials').update(payload).eq('id',old.id).eq('project_id',projectId):await supabase.from('eletripro_materials').insert({project_id:projectId,...payload,unit_price:0,source_key:item.source_key});
+       if(result.error)throw result.error;
+     }
+     const stale=circuitRows.filter(x=>!desired.some(d=>d.source_key===x.source_key));
+     if(stale.length){const result=await supabase.from('eletripro_materials').delete().in('id',stale.map(x=>x.id)).eq('project_id',projectId);if(result.error)throw result.error;}
+     setCircuitStatus(`${desired.length} materiais consolidados. Quantidades atualizadas sem alterar preços existentes.`);
+   }catch(e){setCircuitStatus('Erro ao consolidar: '+(e instanceof Error?e.message:String(e)))}
    finally{setMaterialSending(false)}
  }
+ const roomCalculation=linkedLoads(loadLinks,environmentOptions);
+ const roomPowerW=roomCalculation.va*Number(settings.powerFactor);
+ const powerForSizing=loadMode==='rooms'?(loadLinks.length>0&&roomCalculation.missing.length===0?String(roomPowerW):''):power;
  const {method,temperature,groupMode}=settings;
  const effectiveMaterial=settings.conductorMaterial;
  const effectiveInsulation=settings.conductorInsulation;
@@ -270,7 +299,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const voltage=settings.voltage;
  const effectiveWiring=settings.supply==='single'?'phase-neutral':settings.supply==='three'?'three':settings.wiring;
  const num=(x:string)=>x.trim()===''?NaN:Number(x.replace(',','.'));
- const p=num(power),v=num(voltage),f=num(effectivePf),l=num(length);
+ const p=num(powerForSizing),v=num(voltage),f=num(effectivePf),l=num(length);
  const ft=temperature5410[effectiveInsulation]?.[temperature];
  const fg=grouping5410[groupMode]?.[effectiveGroupCount];
  const valid=Number.isFinite(p)&&p>0&&Number.isFinite(l)&&l>0&&Number.isFinite(v)&&v>0&&Number.isFinite(f)&&f>0&&f<=1;
@@ -350,13 +379,20 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   {circuitStatus&&<p className="hint" role="status">{circuitStatus}</p>}
   </section><div className="sizing-layout"><section className="panel sizing-form"><h2>Dados do circuito</h2>
  <label>Tipo de circuito<select value={circuit} onChange={e=>setCircuit(e.target.value)}><option value="lighting">Iluminação</option><option value="tug">Tomadas de uso geral</option><option value="tue">Circuito dedicado / TUE</option><option value="motor">Motor / máquina</option><option value="feeder">Alimentador</option><option value="other">Outro</option></select></label>
- <h3>Dados elétricos</h3><label>Quantidade de circuitos agrupados<select value={groupCount} onChange={e=>setGroupCount(e.target.value)}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label><div className="two"><label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label><label>Comprimento de ida (m)<input type="number" min="0" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 15"/></label></div>
+ <div className="ep-load-links"><h3>Origem da carga</h3><label>Potência do circuito<select value={loadMode} onChange={e=>setLoadMode(e.target.value as 'manual'|'rooms')}><option value="manual">Informar potência manualmente</option><option value="rooms">Somar cargas dos ambientes</option></select></label>
+ {loadMode==='rooms'&&<><p className="hint">Selecione as cargas que pertencem a este circuito. É possível associar vários ambientes. Uma mesma carga não deve ser atribuída a dois circuitos.</p>
+ {environmentOptions.map(room=>{const estimate=estimateRoom(room);return <div className="ep-room-pick" key={room.id}><strong>{room.title}</strong>{(['lighting','tug'] as RoomLoadKind[]).map(kind=>{const va=estimate?.[kind];const selected=loadLinks.some(x=>x.environmentId===room.id&&x.kind===kind);return <label key={kind}><input type="checkbox" disabled={va===null||va===undefined||(circuit==='lighting'&&kind!=='lighting')||(circuit==='tug'&&kind!=='tug')} checked={selected} onChange={e=>setLoadLinks(old=>e.target.checked?[...old,{environmentId:room.id,kind}]:old.filter(x=>!(x.environmentId===room.id&&x.kind===kind)))}/>{kind==='lighting'?'Iluminação':'Tomadas'} — {va===null||va===undefined?'Revisão manual':`${va} VA`}</label>})}</div>})}
+ <div className="sizing-metric"><span>Carga total associada</span><strong>{loadLinks.length?`${roomCalculation.va.toLocaleString('pt-BR')} VA`:'—'}</strong></div>
+ {roomCalculation.missing.length>0&&<p role="alert" className="sizing-warning">Existem ambientes removidos ou cargas sem estimativa. Revise as associações antes de salvar.</p>}
+ <p className="hint">Para o dimensionamento preliminar, P = S × fator de potência geral. As cargas mínimas em VA não são tratadas diretamente como W.</p></>}
+ </div>
+ <h3>Dados elétricos</h3><label>Quantidade de circuitos agrupados<select value={groupCount} onChange={e=>setGroupCount(e.target.value)}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label><div className="two">{loadMode==='manual'&&<label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label>}<label>Comprimento de ida (m)<input type="number" min="0" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 15"/></label></div>
  <details className="ep-details"><summary>Parâmetros gerais utilizados</summary><p className="hint">Tensão: {voltage} V · Método: {method} · Temperatura: {temperature} °C · Material: {effectiveMaterial==='copper'?'cobre':'alumínio'}. Altere os padrões em Tipo de instalação.</p></details></section>
  <section className="panel sizing-results"><h2>Seção do condutor</h2><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção do condutor/Bitola</span><strong>{selectedSection===null?'—':`${String(selectedSection).replace('.',',')} mm²`}</strong></div>
  {noCompliantCandidate&&<div className="sizing-warning"><strong>Nenhuma seção aprovada no modelo experimental</strong><p>Não foi encontrada seção que atenda simultaneamente à corrente e ao limite provisório de 4% dentro da base provisória. Não use esse resultado para especificação.</p></div>}
  {current!==null&&!supported&&<div className="sizing-warning"><strong>Condição não contemplada</strong><p>Esta condição não está coberta pelas tabelas e hipóteses implementadas. Não é possível pré-selecionar a seção automaticamente.</p></div>}
  {noBreakerSolution&&<div className="sizing-warning"><strong>Sem combinação preliminar de cabo e disjuntor</strong><p>Há seção que atende à corrente e à queda estimada, mas nenhuma das seções disponíveis permite um disjuntor da lista com Ib ≤ In ≤ Iz. Não selecione um disjuntor acima da capacidade corrigida do condutor.</p></div>}
- {candidate!==null&&breakerCandidate!==null&&Number.isFinite(l)&&l>0&&<div className="sizing-formula"><strong>Enviar materiais ao cadastro do projeto</strong><p className="hint">Cabos separados por função e cor, com metragem inicial igual ao comprimento de ida para cada condutor. Ajuste cada quantidade e preço em Materiais. Em iluminação, o retorno é estimado com o mesmo comprimento; confirme o percurso real. A seção do PE é preliminar. Não inclui perdas nem reserva técnica.</p><button type="button" className="primary" disabled={materialSending} onClick={()=>void sendSizingMaterials(budgetCableItems({length:l,size:candidate.size,material:effectiveMaterial,insulation:effectiveInsulation,circuit,wiring:effectiveWiring,breaker:breakerCandidate,curve:tripCurve||'a confirmar',poles:effectiveWiring==='phase-neutral'?1:effectiveWiring==='phase-phase'?2:3}))}>{materialSending?'Salvando...':'Adicionar cabos e disjuntor a Materiais'}</button></div>}
+ {selectedCircuitId&&candidate!==null&&breakerCandidate!==null&&Number.isFinite(l)&&l>0&&<div className="sizing-formula"><strong>Enviar materiais ao cadastro do projeto</strong><p className="hint">Cabos separados por função e cor, com metragem inicial igual ao comprimento de ida para cada condutor. Ajuste cada quantidade e preço em Materiais. Em iluminação, o retorno é estimado com o mesmo comprimento; confirme o percurso real. A seção do PE é preliminar. Não inclui perdas nem reserva técnica.</p><button type="button" className="primary" disabled={materialSending} onClick={()=>void sendSizingMaterials(budgetCableItems({length:l,size:candidate.size,material:effectiveMaterial,insulation:effectiveInsulation,circuit,wiring:effectiveWiring,breaker:breakerCandidate,curve:tripCurve||'a confirmar',poles:effectiveWiring==='phase-neutral'?1:effectiveWiring==='phase-phase'?2:3}))}>{materialSending?'Salvando...':'Consolidar materiais deste circuito'}</button></div>}
  {candidate!==null&&current!==null&&<details className="sizing-formula"><summary>Ver memória de seleção automática</summary>
  <p>1. Corrente de projeto: Ib = {fmt(current)} A. Seção mínima considerada: {String(minSection).replace('.',',')} mm².</p>
  <p>2. Capacidade corrigida: Iz = Iz₀ × Ft × Fg, com Ft = {fmt(ft!)} e Fg = {fmt(fg!)}.</p>
@@ -375,7 +411,24 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  <div className="ep-modal-actions"><button type="button" className="primary" disabled={circuitBusy||circuitLoading||!circuitTitle.trim()||!Number.isFinite(p)||p<=0||!Number.isFinite(l)||l<=0} onClick={()=>void saveCircuit()}>{circuitBusy?'Salvando...':selectedCircuitId?'Atualizar circuito':'Salvar circuito'}</button>{selectedCircuitId&&<button type="button" className="outline" disabled={circuitBusy} onClick={()=>void deleteCircuit()}>Excluir circuito</button>}</div></>}<button type="button" className="outline ep-modal-close-bottom" onClick={clearCircuit} disabled={circuitBusy}>Fechar</button></div></div>}</>
 }
 
+function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
+ const [rows,setRows]=useState<SavedCircuit[]>([]),[loading,setLoading]=useState(true),[busy,setBusy]=useState<string|null>(null),[message,setMessage]=useState('');
+ const [projectId,setProjectId]=useState('');
+ useEffect(()=>{let live=true;void(async()=>{try{const id=await ensureEletriProject(clientId,userId);if(!supabase)return;const r=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true});if(r.error)throw r.error;if(live){setRows((r.data||[]) as SavedCircuit[]);setProjectId(id)}}catch(e){if(live)setMessage('Erro ao carregar quadro: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
+ const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
+ async function assign(row:SavedCircuit,phase:string){if(!supabase||!projectId||busy)return;setBusy(row.id);
+ const data={...row.data,panelPhase:phase};const r=await supabase.from('eletripro_circuits').update({data,updated_at:new Date().toISOString()}).eq('id',row.id).eq('project_id',projectId);
+ if(r.error)setMessage('Erro ao salvar fase: '+r.error.message);else setRows(old=>old.map(x=>x.id===row.id?{...x,data}:x));setBusy(null);
+ }
+ const sums=Object.fromEntries(phases.map(p=>[p,rows.filter(r=>(r.data.panelPhase||'A')===p).reduce((n,r)=>n+Number(r.data.results&&typeof r.data.results==='object'?(r.data.results as Record<string,unknown>).current||0:0),0)]));
+ return <section className="panel"><h2>Quadro de distribuição</h2><p className="hint">Organização preliminar dos circuitos. Defina manualmente a fase; não há dimensionamento de barramentos, curto-circuito, DR ou DPS nesta etapa.</p>
+ {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:<div className="ep-distribution-list">{rows.map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;return <div className="ep-distribution-item" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div><strong>{row.title}</strong><small>Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {result.current?`${Number(result.current).toFixed(1)} A`:'—'}</small></div><label>Fase<select value={phases.includes(String(row.data.panelPhase))?String(row.data.panelPhase):'A'} disabled={busy===row.id} onChange={e=>void assign(row,e.target.value)}>{phases.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
+ <div className="ep-summary-grid">{phases.map(p=><div key={p}><span>Corrente de projeto associada à fase {p}</span><strong>{sums[p].toLocaleString('pt-BR',{maximumFractionDigits:1})} A</strong></div>)}</div><p className="hint">As somas são apenas indicativas, sem fatores de demanda e sem balanceamento automático. Verifique a alimentação e os dispositivos de proteção antes da execução.</p>{message&&<p role="status">{message}</p>}</section>
+}
+
 type MaterialRow={id:string;description:string;quantity:number;unit:string;unit_price:number};
+type GeneratedMaterial=MaterialRow & {source_key:string|null};
+
 async function ensureEletriProject(clientId:string,userId:string){
  if(!supabase)throw new Error('Supabase indisponível');
  const found=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
@@ -427,6 +480,39 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
   setBusy(false);if(result.error){setStatus('Erro ao excluir: '+result.error.message);return}
   if(editingId===row.id)reset();setRefreshCount(x=>x+1);
  }
+ async function consolidateAll(){
+  if(!supabase||!projectId||busy)return;
+  if(!window.confirm('Consolidar cabos e disjuntores de todos os circuitos salvos? Os preços dos materiais gerados serão mantidos. Os materiais manuais não serão alterados.'))return;
+  setBusy(true);setStatus('Consolidando circuitos...');
+  try{
+   const [cr,mr]=await Promise.all([
+    supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',projectId),
+    supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',projectId).not('source_key','is',null)
+   ]);
+   if(cr.error)throw cr.error;if(mr.error)throw mr.error;
+   const existing=(mr.data||[]) as GeneratedMaterial[];
+   const desired:{source_key:string;description:string;quantity:number;unit:string}[]=[];
+   const skipped:string[]=[];
+   for(const c of (cr.data||[]) as SavedCircuit[]){
+    const d=c.data||{},r=(d.results||{}) as Record<string,unknown>;
+    const section=Number(r.selectedSection),breaker=Number(r.breaker),length=Number(d.length);
+    if(!(section>0&&breaker>0&&length>0)){skipped.push(c.title);continue}
+    const cfg=(d.installationSnapshot||defaultInstallation) as InstallationSettings;
+    const curve=String(r.curve||'a confirmar');
+    const wiring=String(d.wiring||cfg.wiring||'phase-neutral');
+    const list=budgetCableItems({length,size:section,material:String(d.material||cfg.conductorMaterial||'copper'),insulation:String(d.insulation||cfg.conductorInsulation||'PVC 70 °C'),circuit:String(d.circuit||'tug'),wiring,breaker,curve,poles:wiring==='phase-neutral'?1:wiring==='phase-phase'?2:3});
+    list.forEach((item,i)=>desired.push({description:item.description,quantity:item.quantity,unit:item.unit,source_key:`${c.id}:${item.description.includes('Disjuntor')?'breaker':item.description.includes('(Fase)')?'phase':item.description.includes('(Neutro)')?'neutral':item.description.includes('(Retorno)')?'return':item.description.includes('(Proteção (PE))')?'pe':i}`}));
+   }
+   for(const item of desired){
+    const old=existing.find(x=>x.source_key===item.source_key);
+    const payload={description:item.description,quantity:item.quantity,unit:item.unit};
+    const result=old?await supabase.from('eletripro_materials').update(payload).eq('id',old.id).eq('project_id',projectId):await supabase.from('eletripro_materials').insert({project_id:projectId,...payload,unit_price:0,source_key:item.source_key});
+    if(result.error)throw result.error;
+   }
+   setStatus(`${desired.length} itens consolidados. ${skipped.length?`Sem dimensionamento válido: ${skipped.join(', ')}.`:''} Preços existentes preservados.`);
+   setRefreshCount(x=>x+1);
+  }catch(e){setStatus('Erro ao consolidar: '+(e instanceof Error?e.message:String(e)))}finally{setBusy(false)}
+ }
  async function importBudget(){
   if(!supabase||!projectId||busy||!localBudget.length)return;
   if(!window.confirm(`Importar ${localBudget.length} itens do orçamento local para Materiais? Itens já existentes não serão substituídos e poderão ficar duplicados.`))return;
@@ -436,8 +522,9 @@ function MaterialsPanel({clientId,userId,localBudget}:{clientId:string;userId:st
   setRefreshCount(x=>x+1);
  }
  return <section className="panel"><div className="panel-heading"><div><h2>Materiais cadastrados</h2></div><button type="button" className="primary" onClick={()=>{reset();setEditorOpen(true)}} disabled={busy}><Plus size={16}/> Incluir material</button></div>
- {status&&/erro|falha/i.test(status)&&<p className="hint" role="alert">{status}</p>}
+ {status&&<p className="hint" role="status">{status}</p>}
  <div className="ep-record-list">{rows.map((r,index)=><div className="ep-material-record" key={r.id}><span className="ep-record-number">{String(index+1).padStart(2,"0")}</span><div className="ep-material-info"><strong>{r.description}</strong><span>{Number(r.quantity).toLocaleString("pt-BR",{maximumFractionDigits:3})} {r.unit} × {moneyBR(Number(r.unit_price))} · <b>{moneyBR(Number(r.quantity)*Number(r.unit_price))}</b></span></div><div className="ep-material-actions"><button className="outline" disabled={busy} onClick={()=>{setEditorOpen(true);setEditingId(r.id);setDescription(r.description);setQuantity(String(r.quantity));setUnit(r.unit);setUnitPrice(String(r.unit_price))}}>Editar</button><button className="outline" disabled={busy} onClick={()=>void remove(r)}>Excluir</button></div></div>)}</div>
+ <div className="ep-material-tools"><button type="button" className="outline" disabled={busy||!projectId} onClick={()=>void consolidateAll()}>Consolidar materiais dos circuitos</button><p className="hint">Atualiza as quantidades de cabos e disjuntores gerados, preservando preços e materiais cadastrados manualmente. Revise as quantidades e os percursos reais.</p></div>
  {rows.length===0&&<p className="hint">Nenhum material salvo neste projeto.</p>}
  <div className="ep-total-highlight"><span>Valor total dos materiais</span><strong>{moneyBR(rows.reduce((sum,r)=>sum+Number(r.quantity)*Number(r.unit_price),0))}</strong></div>
  {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)reset()}}><div className="panel sizing-form ep-editor-card" role="dialog" aria-modal={true} aria-label={editingId?'Editar material':'Cadastrar material'}><div className="ep-editor-heading"><h3>{editingId?'Editar material':'Cadastrar material'}</h3><button type="button" className="ep-close" aria-label="Fechar" onClick={reset} disabled={busy}><X size={20}/></button></div>
@@ -512,6 +599,7 @@ function BudgetsPanel({clientId,userId,localBudget}:{clientId:string;userId:stri
  function closeBudget(){if(busy||loading||!confirmDiscard())return;setViewMode(false);setEditorOpen(false);setItems([]);setSelection(null);setTitle('Novo orçamento');updateDirty(false)}
  function newBudget(){
   if(busy||loading||!confirmDiscard())return;
+  if(supabase&&projectId)void supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price').eq('project_id',projectId).order('created_at',{ascending:true}).then(r=>{if(!r.error)setMaterials((r.data||[]) as MaterialRow[])});
   setViewMode(false);setEditorOpen(true);setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
  }
  async function save(){
@@ -636,7 +724,7 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
  const [activeClientId,setActiveClientId]=useState<string|null>(null);
  const [clientAreaTab,setClientAreaTab]=useState('Tipo de instalação');
  const budgetLoadedFor=React.useRef<string|null>(null);
- const clientAreaTabs=['Tipo de instalação','Dimensionamento','Ambientes','Materiais/Orçamentos'];
+ const clientAreaTabs=['Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos'];
  const clientAreaOpen=clientAreaTabs.includes(tab);
  const activeClient=clients.find(c=>c.id===activeClientId);
  const clientStorageKey=(suffix:string)=>`eletripro-client-${session?.user?.id||'anon'}-${activeClientId||'none'}-${suffix}`;
@@ -768,6 +856,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{clientAreaTabs.map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div></section>}
 {tab==='Tipo de instalação'&&activeClient&&<><InstallationSetup settings={installationSettings} onChange={updateInstallation} onSave={()=>void saveInstallation()} saving={installationLoading||installationSaving}/>{installationStatus&&installationStatus.startsWith("Erro")&&<p className="hint" role="alert">{installationStatus}</p>}</>}
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={installationSettings}/>}
+{tab==='Quadro de distribuição'&&activeClient&&<DistributionPanel key={activeClientId} clientId={activeClientId!} userId={session.user.id} settings={installationSettings}/>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
 {tab==='Materiais/Orçamentos'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/><BudgetsPanel key={'budgets-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems}/></div>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
@@ -781,6 +870,6 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Ganhos por mês"><div className="ep-workflow-head"><h2>Ganhos por mês</h2><button className="outline" onClick={()=>setShowEarnings(false)} aria-label="Fechar"><X size={18}/></button></div>
  {monthlyEarnings.length?monthlyEarnings.map(([month,total])=><div className="ep-month-row" key={month}><span>{monthLabel(month+'-01')}</span><strong>{brl(total)}</strong></div>):<p>Nenhum serviço finalizado com orçamento registrado.</p>}
  <div className="ep-total-highlight"><span>Total acumulado</span><strong>{brl(earningsTotal)}</strong></div><button className="outline" onClick={()=>setShowEarnings(false)}>Fechar</button></section></div>}
- {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Materiais/Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
-</main><footer>EletriPro · Interface v0.7.32 · Dados de demonstração identificados</footer></div></div>}
+ {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais/Orçamentos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
+</main><footer>EletriPro · Interface v0.7.35 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);

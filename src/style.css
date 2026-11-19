@@ -129,3 +129,18 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-workflow-dialog{gap:14px;max-height:calc(100dvh - 24px);overflow-y:auto}.ep-workflow-dialog .ep-summary-actions{margin-top:0}.ep-workflow-dialog .ep-summary-actions button{min-height:43px}
 @media(max-width:720px){.ep-dashboard-clean{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ep-dashboard-clean>article,.ep-dashboard-clean>.ep-client-card,.ep-dashboard-clean>.ep-earnings-card{padding:15px;min-width:0}.ep-dashboard-clean .ep-status-card{grid-column:1/-1;grid-row:2}.ep-status-rows>div{padding:10px 0}.ep-modal-backdrop{align-items:center;padding:10px}.ep-modal-backdrop>.ep-editor-card,.ep-modal-backdrop>.ep-circuit-editor{max-height:calc(100dvh - 20px)}.ep-workflow-dialog{width:100%;padding:18px;gap:12px}.ep-workflow-dialog select{min-height:44px}.ep-workflow-dialog .ep-summary-actions{display:flex;flex-wrap:wrap}.ep-workflow-dialog .ep-summary-actions button{flex:1;min-width:110px}.ep-material-actions{margin-left:0}.ep-form-footer button{min-height:44px}}
 @media(max-width:420px){.ep-dashboard-clean{grid-template-columns:1fr 1fr}.ep-dashboard-clean>article:not(.ep-status-card),.ep-dashboard-clean>.ep-client-card,.ep-dashboard-clean>.ep-earnings-card{padding:13px}.ep-dashboard-clean strong{overflow-wrap:anywhere}.ep-dashboard-clean .ep-status-card{padding:15px}}
+
+/* v0.7.35 — integração de ambientes, quadro e consolidação */
+.ep-load-links{display:grid;gap:12px;border:1px solid #3b424d;border-radius:16px;padding:18px;margin:12px 0}
+.ep-load-links h3{margin:0}
+.ep-room-pick{border:1px solid #363d46;border-radius:12px;padding:12px;display:grid;gap:9px}
+.ep-room-pick label{display:flex;align-items:center;gap:10px;font-weight:400}
+.ep-room-pick input[type=checkbox]{width:18px;height:18px;flex:none}
+.ep-distribution-list{display:grid;gap:10px;margin:18px 0}
+.ep-distribution-item{display:grid;grid-template-columns:auto minmax(0,1fr) 120px;align-items:center;gap:14px;border:1px solid #343a43;border-radius:14px;padding:15px}
+.ep-distribution-item>div{display:grid;gap:6px;min-width:0}
+.ep-distribution-item small{color:#b5bfca;line-height:1.4}
+.ep-distribution-item label{display:grid;gap:5px;font-size:12px}
+.ep-distribution-item select{min-width:0;width:100%;padding:9px}
+.ep-material-tools{margin:16px 0;display:grid;gap:8px}
+@media(max-width:650px){.ep-distribution-item{grid-template-columns:auto minmax(0,1fr);gap:10px}.ep-distribution-item label{grid-column:2;width:100%}.ep-load-links{padding:12px}}
