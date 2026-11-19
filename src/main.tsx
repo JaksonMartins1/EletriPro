@@ -613,7 +613,7 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
  <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportValues} onChange={e=>setExportValues(e.target.checked)}/> Valores</label>
  </div>
  <button type="button" className="primary" disabled={busy||(!exportMaterials&&!exportLabor)} onClick={()=>void (async()=>{
-  const selected=rows.filter(r=>r.item_type==='labor'?exportLabor:exportMaterials);
+  const selected=rows.filter(r=>r.item_type==='labor'?exportLabor:exportMaterials).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
   if(!selected.length){setStatus('Não há itens das categorias selecionadas para exportar.');return;}
   setBusy(true);setStatus('Gerando PDF...');
   try{
@@ -838,7 +838,7 @@ function TechnicalReport({client,userId,professional,logo,accent,settings}:{clie
    const result=(c:SavedCircuit)=>(c.data.results||{}) as Record<string,unknown>;
    if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type||( /iluminaç[aã]o|lighting/i.test(c.title)?'lighting':undefined)),reportNum(c.data.power),reportText(result(c).breaker),reportText(result(c).selectedSection)]));
    if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Corrente de Projeto (A)'],[...circuits].sort((a,b)=>(Number(result(b).breaker)||0)-(Number(result(a).breaker)||0)).map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportNum(result(c).current)]}));
-   const chosen=materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials));
+   const chosen=materials.filter(m=>(m.item_type==='labor'?options.labor:options.materials)).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
    if(options.materials||options.labor){
     add('Materiais e mão de obra',['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])]),'materials');
    }
