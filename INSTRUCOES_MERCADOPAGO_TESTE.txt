@@ -1,0 +1,8 @@
+ELETRIPRO - INTEGRACAO MERCADO PAGO (TESTE)
+
+1. Este pacote e a versao frontend consolidada.
+2. Configurar as variaveis VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY no Netlify.
+3. Nao inserir access token Mercado Pago nem service_role no frontend.
+4. Antes de disponibilizar pagamentos: verificar que mercadopago-checkout retorna checkout_url valido e que webhook confirma uma ordem real de teste.
+5. O webhook e o checkout estao em Supabase Edge Functions e NAO estao incluidos neste ZIP.
+6. Publicar somente apos concluir a verificacao da API de Orders e testes de ponta a ponta.
