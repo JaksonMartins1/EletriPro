@@ -10,6 +10,8 @@ export default function OrdersAuthTest({ plans, userId }: { plans: Plan[]; userI
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<TestResult | null>(null);
   const [pixResult, setPixResult] = useState<TestResult | null>(null);
+  const [statusResult, setStatusResult] = useState<TestResult | null>(null);
+  const [statusBusy, setStatusBusy] = useState(false);
   const [selectedPlan, setSelectedPlan] = useState('');
   const [confirm, setConfirm] = useState(false);
   const activePlans = plans.filter(p => p.active && Number.isInteger(p.price_cents) && p.price_cents > 0);
@@ -35,6 +37,40 @@ export default function OrdersAuthTest({ plans, userId }: { plans: Plan[]; userI
       return { status, body: payload };
     }
     return { status: 200, body: data };
+  }
+
+  async function consultOrderStatus() {
+    if (busy || statusBusy) return;
+    setStatusBusy(true);
+    setStatusResult(null);
+    try {
+      if (!supabase) throw new Error('Supabase não configurado.');
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !session?.access_token || session.user.id !== userId) {
+        throw new Error('Faça login novamente para consultar a Order.');
+      }
+      const { data, error } = await supabase.functions.invoke('eletripro-payment-status-orders-test', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: { intent_id: '78728de1-ca57-4683-9229-b01ef72258cb' },
+      });
+      if (error) {
+        const response = (error as { context?: Response }).context;
+        let payload: any = { error: error.message };
+        let status: number | null = null;
+        if (response && typeof response.status === 'number') {
+          status = response.status;
+          try { payload = await response.clone().json(); } catch { /* mantém mensagem */ }
+        }
+        setStatusResult({ status, body: payload });
+      } else {
+        setStatusResult({ status: 200, body: data });
+      }
+    } catch (e) {
+      setStatusResult({ status: null, body: { error: e instanceof Error ? e.message : 'Falha desconhecida' } });
+    } finally {
+      setStatusBusy(false);
+    }
   }
 
   async function runAuthTest() {
@@ -70,6 +106,22 @@ export default function OrdersAuthTest({ plans, userId }: { plans: Plan[]; userI
       <p>Testes separados do checkout atual. Não use credenciais de produção.</p>
       <button type="button" className="primary" disabled={busy} onClick={runAuthTest}>{busy ? 'Aguarde...' : 'Testar autenticação Orders API'}</button>
       {result && <div role="status" style={{ marginTop: 10 }}><strong>HTTP {result.status ?? 'sem resposta'}</strong><p>{result.status === 409 && result.body?.error === 'Plano indisponível' ? 'Autenticação aceita; plano inexistente (esperado).' : 'Confira o resultado antes de continuar.'}</p><pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(result.body, null, 2)}</pre></div>}
+      <hr style={{ margin: '18px 0', opacity: .4 }}/>
+      <h3>Consultar status Orders API — somente leitura</h3>
+      <p>Consulta a Order PIX de R$ 19,90 já criada. Não gera cobrança nem altera assinatura.</p>
+      <p>Intent ID: <code>78728de1-ca57-4683-9229-b01ef72258cb</code></p>
+      <button type="button" className="primary" disabled={busy || statusBusy} onClick={() => void consultOrderStatus()}>
+        {statusBusy ? 'Consultando...' : 'Consultar status Orders API'}
+      </button>
+      {statusResult && <div role="status" style={{ marginTop: 12 }}>
+        <strong>HTTP {statusResult.status ?? 'sem resposta'}</strong>
+        {statusResult.body?.status && <p>Status: <strong>{String(statusResult.body.status)}</strong></p>}
+        {statusResult.body?.order_status && <p>Status da Order: <strong>{String(statusResult.body.order_status)}</strong></p>}
+        {statusResult.body?.payment_status && <p>Status da transação: <strong>{String(statusResult.body.payment_status)}</strong></p>}
+        {typeof statusResult.body?.applied === 'boolean' && <p>Assinatura ativada: <strong>{statusResult.body.applied ? 'Sim' : 'Não'}</strong></p>}
+        {statusResult.body?.read_only === true && <p>Consulta somente de leitura.</p>}
+        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(statusResult.body, null, 2)}</pre>
+      </div>}
       <hr style={{ margin: '18px 0', opacity: .4 }}/>
       <h3>Gerar PIX de teste Orders API</h3>
       <p><strong>Aviso:</strong> a Order será criada no Mercado Pago. Um pagamento aprovado poderá ativar ou renovar o plano nesta conta do banco principal. Não escaneie nem pague o PIX sem planejar o teste.</p>
