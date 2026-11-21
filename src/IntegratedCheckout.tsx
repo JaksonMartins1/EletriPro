@@ -8,7 +8,9 @@ type Props={plan:Plan;userId:string;isAdmin:boolean;onClose:()=>void;onActivated
 const money=(n:number)=>n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const publicKey=import.meta.env.VITE_MERCADOPAGO_PUBLIC_KEY as string|undefined;
 function PixSymbol(){return <svg className="ep-pay-icon" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M11.5 5.5 6 11c-2.8 2.8-2.8 7.2 0 10l5.5 5.5M20.5 5.5 26 11c2.8 2.8 2.8 7.2 0 10l-5.5 5.5" stroke="currentColor" strokeWidth="2.7" strokeLinecap="round"/><path d="m10 13 3.5 3.5a3.55 3.55 0 0 0 5 0L22 13M10 19l3.5-3.5a3.55 3.55 0 0 1 5 0L22 19" stroke="currentColor" strokeWidth="2.7" strokeLinecap="round"/></svg>}
-function keyFor(userId:string,planId:string,method:string){return `eletripro-payment-v1:${userId}:${planId}:${method}`}
+// A chave de idempotência pertence a uma tentativa com preço e prazo definidos.
+// Alterar o preço do plano nunca deve reutilizar a chave de uma cobrança anterior.
+function keyFor(userId:string,planId:string,method:string,priceCents:number,billingMonths:number){return `eletripro-orders-checkout-v3:${userId}:${planId}:${method}:${priceCents}:${billingMonths}`}
 function getKey(storageKey:string){let key=sessionStorage.getItem(storageKey);if(!key){key=crypto.randomUUID();sessionStorage.setItem(storageKey,key)}return key}
 function clearKey(storageKey:string){sessionStorage.removeItem(storageKey)}
 async function invoke(name:string,body:Record<string,unknown>):Promise<Result>{
@@ -24,7 +26,7 @@ export default function IntegratedCheckout({plan,userId,isAdmin,onClose,onActiva
  const[method,setMethod]=useState<'pix'|'credit_card'>('pix');
  const[busy,setBusy]=useState(false),[message,setMessage]=useState(''),[result,setResult]=useState<Result|null>(null);
  const[cardReady,setCardReady]=useState(false);const formRef=useRef<any>(null);const activeRef=useRef(true);
- const storageKey=keyFor(userId,plan.id,method);
+ const storageKey=keyFor(userId,plan.id,method,plan.price_cents,plan.billing_months);
  useEffect(()=>{activeRef.current=true;return()=>{activeRef.current=false}},[]);
  useEffect(()=>{setResult(null);setMessage('');setCardReady(false);let cancelled=false;
   if(method!=='credit_card')return;
@@ -43,13 +45,13 @@ export default function IntegratedCheckout({plan,userId,isAdmin,onClose,onActiva
  async function createPix(){
   if(!isAdmin){setMessage('PIX Orders API ainda em homologação: disponível somente para administrador.');return}
   if(result?.intent_id){await checkStatus(result.intent_id);return}
-  setBusy(true);setMessage('Gerando ou recuperando PIX de homologação...');
+  setBusy(true);setMessage('Gerando PIX de homologação com o valor atual do plano...');
   try{
    const r=await invoke('eletripro-payment-orders-test',{plan_id:plan.id,payment_method:'pix',request_key:getKey(storageKey)});
    setResult(r);
    if(r.intent_id)sessionStorage.setItem(`${storageKey}:intent`,r.intent_id);
    if(r.applied){clearKey(storageKey);await onActivated();setMessage('Assinatura já ativada.')}else setMessage(r.pix?.qr_code?'PIX de teste gerado. Não pague com dinheiro real.':'Order registrada. Consulte o status; se não houver QR Code, confira a resposta da função.');
-  }catch(e){setMessage((e instanceof Error?e.message:String(e))+' Não gere outra cobrança antes de verificar a tentativa atual.');}
+  }catch(e){setMessage((e instanceof Error?e.message:String(e))+' A tentativa foi preservada para evitar duplicidade. Não tente novamente até verificar o registro no Supabase.');}
   finally{setBusy(false)}
  }
  async function createCard(event:React.FormEvent){event.preventDefault();if(!formRef.current||!cardReady){setMessage('Aguarde os campos seguros do cartão.');return}setBusy(true);setMessage('Processando cartão...');try{const values=formRef.current.getCardFormData();if(!values.token)throw new Error('Não foi possível tokenizar o cartão. Verifique os dados.');const r=await invoke('eletripro-payment',{plan_id:plan.id,payment_method:'credit_card',request_key:getKey(storageKey),card:{token:values.token,payment_method_id:values.paymentMethodId,issuer_id:values.issuerId,installments:Number(values.installments),identification:{type:values.identificationType,number:values.identificationNumber}}});setResult(r);if(r.applied){clearKey(storageKey);await onActivated();setMessage('Pagamento aprovado! Assinatura ativada.')}else setMessage('Pagamento enviado. Aguardando confirmação.')}catch(e){setMessage((e instanceof Error?e.message:String(e))+' Se houve falha de rede, consulte o pagamento antes de tentar novamente.')}finally{setBusy(false)}}
