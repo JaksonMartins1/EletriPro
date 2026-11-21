@@ -12,6 +12,9 @@ export default function OrdersAuthTest({ plans, userId }: { plans: Plan[]; userI
   const [pixResult, setPixResult] = useState<TestResult | null>(null);
   const [statusResult, setStatusResult] = useState<TestResult | null>(null);
   const [statusBusy, setStatusBusy] = useState(false);
+  const [activationBusy, setActivationBusy] = useState(false);
+  const [activationConfirmed, setActivationConfirmed] = useState(false);
+  const [activationResult, setActivationResult] = useState<TestResult | null>(null);
   const [selectedPlan, setSelectedPlan] = useState('');
   const [confirm, setConfirm] = useState(false);
   const activePlans = plans.filter(p => p.active && Number.isInteger(p.price_cents) && p.price_cents > 0);
@@ -73,6 +76,41 @@ export default function OrdersAuthTest({ plans, userId }: { plans: Plan[]; userI
     }
   }
 
+  async function activateApprovedOrder() {
+    if (busy || statusBusy || activationBusy || !activationConfirmed) return;
+    setActivationBusy(true);
+    setActivationResult(null);
+    try {
+      if (!supabase) throw new Error('Supabase não configurado.');
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !session?.access_token || session.user.id !== userId) {
+        throw new Error('Faça login novamente para ativar a assinatura.');
+      }
+      const { data, error } = await supabase.functions.invoke('eletripro-payment-activate-orders-test', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${session.access_token}` },
+        body: { intent_id: '78728de1-ca57-4683-9229-b01ef72258cb' },
+      });
+      if (error) {
+        const response = (error as { context?: Response }).context;
+        let payload: any = { error: error.message };
+        let status: number | null = null;
+        if (response && typeof response.status === 'number') {
+          status = response.status;
+          try { payload = await response.clone().json(); } catch { /* mantém mensagem */ }
+        }
+        setActivationResult({ status, body: payload });
+      } else {
+        setActivationResult({ status: 200, body: data });
+        if (data?.status === 'approved') setActivationConfirmed(false);
+      }
+    } catch (e) {
+      setActivationResult({ status: null, body: { error: e instanceof Error ? e.message : 'Falha desconhecida' } });
+    } finally {
+      setActivationBusy(false);
+    }
+  }
+
   async function runAuthTest() {
     if (busy) return;
     setBusy(true); setResult(null);
@@ -121,6 +159,26 @@ export default function OrdersAuthTest({ plans, userId }: { plans: Plan[]; userI
         {typeof statusResult.body?.applied === 'boolean' && <p>Assinatura ativada: <strong>{statusResult.body.applied ? 'Sim' : 'Não'}</strong></p>}
         {statusResult.body?.read_only === true && <p>Consulta somente de leitura.</p>}
         <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(statusResult.body, null, 2)}</pre>
+      </div>}
+      <hr style={{ margin: '18px 0', opacity: .4 }}/>
+      <hr style={{ margin: '18px 0', opacity: .4 }}/>
+      <h3>Ativar assinatura de teste — Order aprovada</h3>
+      <p>Esta ação altera a assinatura da conta de homologação no banco principal. Não gera outro PIX. O backend consulta a Order e impede aplicação duplicada.</p>
+      <p>Intent ID: <code>78728de1-ca57-4683-9229-b01ef72258cb</code></p>
+      <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, margin: '10px 0' }}>
+        <input type="checkbox" checked={activationConfirmed} disabled={activationBusy} onChange={e => setActivationConfirmed(e.target.checked)} />
+        <span>Confirmo a ativação da assinatura de teste para esta Order já aprovada.</span>
+      </label>
+      <button type="button" className="primary" disabled={busy || statusBusy || activationBusy || !activationConfirmed} onClick={() => void activateApprovedOrder()}>
+        {activationBusy ? 'Ativando...' : 'Ativar assinatura de teste'}
+      </button>
+      {activationResult && <div role="status" style={{ marginTop: 12 }}>
+        <strong>HTTP {activationResult.status ?? 'sem resposta'}</strong>
+        {activationResult.body?.status && <p>Status: <strong>{String(activationResult.body.status)}</strong></p>}
+        {typeof activationResult.body?.applied_now === 'boolean' && <p>Ativada nesta execução: <strong>{activationResult.body.applied_now ? 'Sim' : 'Não'}</strong></p>}
+        {typeof activationResult.body?.already_applied === 'boolean' && <p>Já ativada anteriormente: <strong>{activationResult.body.already_applied ? 'Sim' : 'Não'}</strong></p>}
+        {activationResult.body?.subscription_expires_at && <p>Validade: <strong>{new Date(String(activationResult.body.subscription_expires_at)).toLocaleString('pt-BR')}</strong></p>}
+        <pre style={{ whiteSpace: 'pre-wrap', overflowWrap: 'anywhere' }}>{JSON.stringify(activationResult.body, null, 2)}</pre>
       </div>}
       <hr style={{ margin: '18px 0', opacity: .4 }}/>
       <h3>Gerar PIX de teste Orders API</h3>
