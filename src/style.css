@@ -216,3 +216,5 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-sub-history th,.ep-sub-history td{text-align:left;padding:11px 9px;border-bottom:1px solid #343945;vertical-align:middle}
 .ep-sub-history td:last-child{white-space:nowrap}
 .ep-sub-status p{line-height:1.55}
+
+.ep-payment-status-notice{padding:12px 14px;margin:12px 0;border:1px solid #525866;border-radius:10px;background:#222831;color:#f3f4f6;font-size:14px;line-height:1.5}
