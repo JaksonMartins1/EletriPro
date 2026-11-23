@@ -356,3 +356,6 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-sizing-validation{display:flex;align-items:flex-start;gap:10px;padding:12px;border:1px solid rgba(230,174,45,.45);border-radius:10px;margin:12px 0;font-weight:600}
 .ep-sizing-validation input{width:18px;height:18px;flex:none;margin-top:2px}
 .ep-circuit-list-item .ep-review-label{display:block;line-height:1.5}
+
+/* Tela neutra durante restauração de sessão, sem mensagem de carregamento */
+.ep-auth-wait{min-height:100vh;background:var(--bg,#0e1118)}

@@ -110,9 +110,9 @@ function estimateRoom(room:SavedEnvironment){
 }
 type SpecialCircuit={name:string;power:string};
 const roomSpecials=(d:Record<string,unknown>):SpecialCircuit[]=>Array.isArray(d.specialCircuits)?(d.specialCircuits as unknown[]).filter(x=>x&&typeof x==='object').map(x=>({name:String((x as Record<string,unknown>).name||''),power:String((x as Record<string,unknown>).power??'')})):(String(d.specialName||'').trim()?[{name:String(d.specialName),power:String(d.specialPower??'')}]:[]);
-type CircuitLoadLink={environmentId:string;kind:RoomLoadKind;specialIndex?:number};
-const loadKey=(link:CircuitLoadLink)=>`${link.environmentId}:${link.kind}${link.kind==='tue'?':'+(link.specialIndex??0):''}`;
-const roomLoadPower=(room:SavedEnvironment,link:CircuitLoadLink)=>link.kind==='tue'?Number(roomSpecials(room.data||{})[link.specialIndex??0]?.power):estimateRoom(room)?.[link.kind];
+type CircuitLoadLink={environmentId:string;kind:RoomLoadKind;specialIndex?:number;part?:number;allocatedVA?:number};
+const loadKey=(link:CircuitLoadLink)=>`${link.environmentId}:${link.kind}${link.kind==='tue'?':'+(link.specialIndex??0):''}${link.kind==='tug'&&link.part!==undefined?':part'+link.part:''}`;
+const roomLoadPower=(room:SavedEnvironment,link:CircuitLoadLink)=>link.kind==='tug'&&link.allocatedVA!==undefined?Number(link.allocatedVA):link.kind==='tue'?Number(roomSpecials(room.data||{})[link.specialIndex??0]?.power):estimateRoom(room)?.[link.kind];
 function linkedLoads(links:CircuitLoadLink[],rooms:SavedEnvironment[]){
  const missing:string[]=[];let va=0;
  for(const link of links){const room=rooms.find(r=>r.id===link.environmentId);if(!room){missing.push(link.environmentId);continue}
@@ -239,7 +239,7 @@ function estimateCircuitRoute(links:CircuitLoadLink[],rooms:SavedEnvironment[]){
 function previewRoomSizing(kind:string,va:number,length:number,settings:InstallationSettings,title:string){
  const voltage=Number(settings.voltage),pf=Number(settings.powerFactor),group=grouping5410[settings.groupMode]?.[settings.groupCount],temp=temperature5410[settings.conductorInsulation]?.[settings.temperature];
  const supported=Boolean(ampacity5410[settings.conductorInsulation]?.[settings.conductorMaterial]?.[settings.method]?.['2'])&&group!==undefined&&temp!==undefined&&(settings.groupMode==='bundle'||(settings.method==='C'&&settings.groupMode==='singleLayer'))&&settings.supply!=='three';
- if(!supported||!(va>0&&voltage>0&&pf>0&&pf<=1&&length>0))return null;
+ if(!supported||!(va>0&&voltage>0&&pf>0&&pf<=1))return null;
  const current=va/voltage;const minSize=settings.conductorMaterial==='aluminum'?16:kind==='lighting'?1.5:2.5;
  const rho=settings.conductorMaterial==='copper'?0.0175:0.0282,alpha=settings.conductorMaterial==='copper'?0.00393:0.00403,conductorTemp=settings.conductorInsulation==='PVC 70 °C'?70:90;
  const rhoOperating=rho*(1+alpha*(conductorTemp-20));const breakerRatings=[6,10,16,20,25,32,40,50,63,80,100,125];
@@ -249,7 +249,7 @@ function previewRoomSizing(kind:string,va:number,length:number,settings:Installa
   const iz=Number(iz0)*group*temp;const drop=2*rhoOperating*length*current*pf/size/voltage*100;
   const minBreaker=kind==='lighting'?10:kind==='tug'&&size===2.5&&kitchen?20:(kind==='tug'||kind==='tue')&&size===2.5?16:kind==='tug'?16:6;
   const breaker=breakerRatings.find(x=>x>=minBreaker&&x>=current-1e-9&&x<=iz+1e-9);
-  if(iz>=current&&drop<=4&&breaker!==undefined)return {current,selectedSection:size,corrected:iz,drop:drop*voltage/100,pct:drop,breaker,curve:kind==='lighting'||kind==='tug'?'C':/chuveiro|torneira el[eé]trica|aquecedor resistivo|resist[eê]ncia/i.test(title)?'B':null};
+  if(iz>=current&&breaker!==undefined)return {current,selectedSection:size,corrected:iz,drop:drop*voltage/100,pct:drop,breaker,curve:kind==='lighting'||kind==='tug'?'C':/chuveiro|torneira el[eé]trica|aquecedor resistivo|resist[eê]ncia/i.test(title)?'B':null};
  }
  return null;
 }
@@ -317,30 +317,61 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
         }
       }
       if(lightingLinks.length){
-        const estimatedLength=estimateCircuitRoute(lightingLinks,environmentOptions);const preliminary=estimatedLength?previewRoomSizing('lighting',lightingVA,estimatedLength,settings,'Iluminação Geral'):null;
+        const estimatedLength=null;const preliminary=previewRoomSizing('lighting',lightingVA,0,settings,'Iluminação Geral');
         drafts.push({title:'Iluminação Geral',data:{circuit:'lighting',environmentId:lightingLinks[0].environmentId,loadMode:'rooms',loadLinks:lightingLinks,power:'',manualPower:'',powerVA:lightingVA,pf:settings.powerFactor,length:estimatedLength?String(estimatedLength):'',lengthEstimated:estimatedLength!==null,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:preliminary||{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
       }
     }
+    // TUG: cozinha e lavanderia em grupos independentes; demais ambientes em TUG Geral.
+    // Cada grupo é dividido em circuitos de até 2.200 VA, preservando a origem das cargas.
+    const tugGroups=new Map<string,{name:string;links:CircuitLoadLink[];va:number}>();
     for(const room of environmentOptions){
-      const estimate=estimateRoom(room);
-      for(const kind of ['tug','tue'] as RoomLoadKind[]){
-        const specials=kind==='tue'?roomSpecials(room.data||{}):[null];
-        for(const [index,special] of specials.entries()){
-        const link:CircuitLoadLink={environmentId:room.id,kind,...(kind==='tue'?{specialIndex:index}:{})};
+      const estimate=estimateRoom(room);const va=estimate?.tug;
+      if(!(typeof va==='number'&&Number.isFinite(va)&&va>0))continue;
+      const normalized=(String(room.data?.kind||'')+' '+room.title).normalize('NFD').replace(/[\u0300-\u036f]/g,'').toLowerCase();
+      const category=/cozinha/.test(normalized)?'Cozinha':/lavanderia|area de servico/.test(normalized)?'Lavanderia':'Geral';
+      const key=category==='Geral'?'geral':category+':'+room.id;
+      if(!tugGroups.has(key))tugGroups.set(key,{name:category==='Geral'?'TUG Geral':`TUG — ${room.title}`,links:[],va:0});
+      const group=tugGroups.get(key)!;
+      // A divisão é feita por potências previstas de tomadas, sem fracionar uma tomada.
+      const count=Number(estimate?.outlets)||0;
+      const points=Array.from({length:count},(_,i)=>category==='Geral'&&String(room.data?.kind||'')==='Banheiro'?600:(category!=='Geral'&&i<3?600:100));
+      // Dados de levantamento existente podem divergir do modelo de pontos; manter o total informado.
+      const totalPoints=points.reduce((a,b)=>a+b,0);
+      if(Math.abs(totalPoints-va)>0.01){points.length=0;let remaining=va;while(remaining>0){const piece=Math.min(remaining,2200);points.push(piece);remaining-=piece;}}
+      // Armazenar a distribuição de pontos por ambiente para não duplicar cargas.
+      (group as typeof group & {points?:{room:SavedEnvironment;power:number;part:number}[]}).points??=[];
+      points.forEach((power,i)=>(group as typeof group & {points:{room:SavedEnvironment;power:number;part:number}[]}).points.push({room,power,part:i}));
+    }
+    for(const group of tugGroups.values()){
+      const points=(group as typeof group & {points?:{room:SavedEnvironment;power:number;part:number}[]}).points||[];
+      let batches:{links:CircuitLoadLink[];va:number}[]=[];
+      for(const point of points){
+        let batch=batches[batches.length-1];
+        if(!batch||batch.va+point.power>2200+1e-9){batch={links:[],va:0};batches.push(batch)}
+        batch.va+=point.power;
+        batch.links.push({environmentId:point.room.id,kind:'tug',part:point.part,allocatedVA:point.power});
+      }
+      for(const [i,batch] of batches.entries()){
+        if(!batch.links.length||batch.links.every(link=>existing.has(loadKey(link))||existing.has(`${link.environmentId}:tug`)))continue;
+        if(batch.links.some(link=>existing.has(loadKey(link))||existing.has(`${link.environmentId}:tug`))){missing.push(group.name+' (cargas já vinculadas; revise antes de gerar novamente)');continue}
+        const title=group.name+(batches.length>1?` — Circuito ${i+1}`:'');
+        const preliminary=previewRoomSizing('tug',batch.va,0,settings,title);
+        drafts.push({title,data:{circuit:'tug',environmentId:batch.links[0].environmentId,loadMode:'rooms',loadLinks:batch.links,power:'',manualPower:'',powerVA:batch.va,pf:settings.powerFactor,length:'',lengthEstimated:false,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:preliminary||{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
+      }
+    }
+    for(const room of environmentOptions){
+      for(const [index,special] of roomSpecials(room.data||{}).entries()){
+        const link:CircuitLoadLink={environmentId:room.id,kind:'tue',specialIndex:index};
         if(existing.has(loadKey(link)))continue;
-        const va=kind==='tue'?Number(special?.power):estimate?.[kind];
-        if(!(typeof va==='number'&&Number.isFinite(va)&&va>0)){
-          if(kind==='tue')missing.push(room.title+' ('+(special?.name||'TUE')+' sem potência válida)');
-          continue;
-        }
-        const title=kind==='lighting'?`Iluminação — ${room.title}`:kind==='tug'?`TUG — ${room.title}`:`${special?.name||'TUE'} — ${room.title}`;
-        const estimatedLength=estimateCircuitRoute([link],environmentOptions);const preliminary=estimatedLength?previewRoomSizing(kind,va,estimatedLength,settings,title):null;
-        drafts.push({title,data:{circuit:kind,environmentId:room.id,loadMode:'rooms',loadLinks:[link],power:'',manualPower:'',powerVA:va,pf:settings.powerFactor,length:estimatedLength?String(estimatedLength):'',lengthEstimated:estimatedLength!==null,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:preliminary||{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
-        }
+        const va=Number(special.power);
+        if(!(Number.isFinite(va)&&va>0)){missing.push(room.title+' ('+(special.name||'TUE')+' sem potência válida)');continue}
+        const title=`${special.name||'TUE'} — ${room.title}`;
+        const preliminary=previewRoomSizing('tue',va,0,settings,title);
+        drafts.push({title,data:{circuit:'tue',environmentId:room.id,loadMode:'rooms',loadLinks:[link],power:'',manualPower:'',powerVA:va,pf:settings.powerFactor,length:'',lengthEstimated:false,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:preliminary||{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
       }
     }
     if(!drafts.length){setCircuitStatus(missing.length?'Revise as cargas: '+missing.join(', '):'Nenhuma carga nova disponível.');return}
-    if(!window.confirm(`Criar ${drafts.length} circuitos com pré-dimensionamento automático? Os comprimentos geométricos são estimativas e devem ser conferidos antes da validação técnica.`))return;
+    if(!window.confirm(`Criar ${drafts.length} circuitos? TUG por cozinha, lavanderia e demais ambientes, limitados a 2.200 VA por circuito. Comprimento não será utilizado no dimensionamento preliminar.`))return;
     setCircuitBusy(true);
     try{
       const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
@@ -356,9 +387,9 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     if(!supabase||circuitBusy||circuitLoading)return;
     const title=circuitTitle.trim();
     if(!title){setCircuitStatus('Informe o nome do circuito.');return}
-    if(!(loadMode==='rooms'?loadLinks.length>0&&roomCalculation.missing.length===0&&roomCalculation.va>0&&Number(settings.powerFactor)>0:Number.isFinite(Number(power))&&Number(power)>0)||!Number.isFinite(Number(length))||Number(length)<=0){setCircuitStatus('Informe potência positiva e comprimento maior que zero.');return}
+    if(!(loadMode==='rooms'?loadLinks.length>0&&roomCalculation.missing.length===0&&roomCalculation.va>0&&Number(settings.powerFactor)>0:Number.isFinite(Number(power))&&Number(power)>0)||(length.trim()!==''&&(!Number.isFinite(Number(length))||Number(length)<0))){setCircuitStatus('Informe uma potência positiva. O comprimento é opcional para este pré-dimensionamento.');return}
     if(loadMode==='rooms'){
-      const conflicts=savedCircuits.filter(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)).flatMap(x=>(x.data.loadLinks as CircuitLoadLink[]).filter(y=>loadLinks.some(z=>z.environmentId===y.environmentId&&z.kind===y.kind)).map(y=>x.title));
+      const conflicts=savedCircuits.filter(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)).flatMap(x=>(x.data.loadLinks as CircuitLoadLink[]).filter(y=>loadLinks.some(z=>loadKey(z)===loadKey(y))).map(y=>x.title));
       if(conflicts.length){setCircuitStatus('Carga já vinculada a outro circuito: '+[...new Set(conflicts)].join(', '));return}
       if(loadLinks.some(x=>x.kind!==circuit)||!['lighting','tug','tue'].includes(circuit)){setCircuitStatus('O tipo de carga deve corresponder ao tipo do circuito.');return}
     }
@@ -422,7 +453,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const p=num(powerForSizing),v=num(voltage),f=num(effectivePf),l=num(length);
  const ft=temperature5410[effectiveInsulation]?.[temperature];
  const fg=grouping5410[groupMode]?.[effectiveGroupCount];
- const valid=Number.isFinite(p)&&p>0&&Number.isFinite(l)&&l>0&&Number.isFinite(v)&&v>0&&Number.isFinite(f)&&f>0&&f<=1;
+ const valid=Number.isFinite(p)&&p>0&&Number.isFinite(v)&&v>0&&Number.isFinite(f)&&f>0&&f<=1;
  const current=valid?p/(v*f*(phases==='three'?Math.sqrt(3):1)):null;
  const rho=effectiveMaterial==='copper'?0.0175:0.0282;
  const alpha=effectiveMaterial==='copper'?0.00393:0.00403;
@@ -435,13 +466,13 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  // Limite de 4% adotado automaticamente como critério provisório de estudo.
  // A aplicabilidade normativa e a queda acumulada precisam ser verificadas no projeto.
  const dropLimitNum=4;
- const lengthValid=Number.isFinite(l)&&l>=0;
+ const lengthValid=true;
  const evaluate=(size:number,iz0:number)=>{
    const iz=iz0*ft!*fg!;
    // Modelo puramente resistivo na temperatura nominal do condutor, sem reatância.
-   const delta=current===null?NaN:2*rhoOperating*l*current*f/size;
+   const delta=current===null||!(l>0)?NaN:2*rhoOperating*l*current*f/size;
    const percent=delta/v*100;
-   return {size,iz0,iz,delta,percent,ampacityOk:current!==null&&iz>=current,dropOk:percent<=dropLimitNum};
+   return {size,iz0,iz,delta,percent,ampacityOk:current!==null&&iz>=current,dropOk:true};
  };
  const candidates=supported&&current!==null&&lengthValid
    ?Object.entries(ampacity5410[effectiveInsulation]?.[effectiveMaterial]?.[method]?.[loaded]||{})
@@ -466,7 +497,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const decisionSteps=candidates.filter(x=>coordinated?x.size<=coordinated.size:(electricalCandidate?x.size<=electricalCandidate.size: false)).map(x=>{
    const inRating=x.ampacityOk&&x.dropOk&&current!==null
      ?(breakerRatings.find(inom=>inom>=minBreaker(x.size)&&inom>=current-1e-9&&inom<=x.iz+1e-9)??null):null;
-   const reason=!x.ampacityOk?'Capacidade de corrente insuficiente':!x.dropOk?'Queda de tensão acima de 4%':inRating===null?'Sem disjuntor compatível na lista':'Atende aos três critérios';
+   const reason=!x.ampacityOk?'Capacidade de corrente insuficiente':inRating===null?'Sem disjuntor compatível na lista':'Atende à capacidade de corrente e coordenação preliminar';
    return {...x,inRating,reason};
  });
  const candidate=coordinated;
@@ -486,7 +517,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const tripCurve=(circuit==='lighting'||circuit==='tug')?'C':(circuit==='tue'&&/chuveiro|torneira el[eé]trica|aquecedor resistivo|resist[eê]ncia/i.test(circuitTitle))?'B':null;
  const raisedForBreaker=electricalCandidate!==null&&candidate!==null&&candidate.size>electricalCandidate.size;
  const noBreakerSolution=electricalCandidate!==null&&candidate===null;
- const noCompliantCandidate=supported&&current!==null&&lengthValid&&!electricalCandidate;
+ const noCompliantCandidate=supported&&current!==null&&!electricalCandidate;
  const fmt=(n:number,d=2)=>n.toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
  const reset=()=>{setPower('');setPf(settings.powerFactor);setLength('');setGroupCount(settings.groupCount)};
  return <><section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><h2>Circuitos do projeto</h2></div><div className="ep-circuit-heading-actions"><button type="button" className="outline" disabled={circuitBusy||circuitLoading||!environmentOptions.length} onClick={()=>void generateRoomCircuitDrafts()}>Gerar circuitos dos ambientes</button><button type="button" className="outline" disabled={circuitBusy} onClick={()=>{clearCircuit();setViewMode(false);setEditorOpen(true)}}><Plus size={16}/> Novo circuito</button></div></div>
@@ -503,14 +534,14 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  <label>Tipo de circuito<select value={circuit} onChange={e=>{const next=e.target.value;setCircuit(next);setLoadLinks(old=>old.filter(link=>link.kind===next));if(loadMode==='rooms'&&!['lighting','tug','tue'].includes(next))setLoadMode('manual')}}><option value="lighting">Iluminação</option><option value="tug">Tomadas de uso geral</option><option value="tue">Circuito dedicado / TUE</option><option value="motor">Motor / máquina</option><option value="feeder">Alimentador</option><option value="other">Outro</option></select></label>
  <div className="ep-load-links"><h3>Origem da carga</h3><label>Potência do circuito<select value={loadMode} onChange={e=>{setLoadMode(e.target.value as 'manual'|'rooms');setLoadLinks(old=>old.filter(link=>link.kind===circuit))}}><option value="manual">Informar potência manualmente</option><option value="rooms" disabled={!['lighting','tug','tue'].includes(circuit)}>Somar cargas dos ambientes</option></select></label>
  {loadMode==='rooms'&&<><p className="hint">{circuit==='lighting'?'Selecione somente cargas de iluminação.':'Selecione somente as cargas do tipo escolhido.'} Cada carga pode pertencer a apenas um circuito.</p>
- {environmentOptions.map(room=>{const estimate=estimateRoom(room);const specials=circuit==='tue'?roomSpecials(room.data||{}):[null];return <div className="ep-room-pick" key={room.id}><strong>{room.title}</strong>{specials.map((special,index)=>{const kind=circuit as RoomLoadKind;const link:CircuitLoadLink={environmentId:room.id,kind,...(kind==='tue'?{specialIndex:index}:{})};const va=kind==='tue'?Number(special?.power):estimate?.[kind];const valid=Number.isFinite(va)&&va>0;const selected=loadLinks.some(x=>loadKey(x)===loadKey(link));const alreadyLinked=savedCircuits.some(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)&&(x.data.loadLinks as CircuitLoadLink[]).some(y=>loadKey(y)===loadKey(link)));return <label key={loadKey(link)}><input type="checkbox" disabled={!valid||alreadyLinked} checked={selected} onChange={e=>setLoadLinks(old=>e.target.checked?[...old,link]:old.filter(x=>loadKey(x)!==loadKey(link)))}/>{kind==='lighting'?'Iluminação':kind==='tue'?special?.name||'Uso específico':'Tomadas'} — {!valid?'Revisão manual':`${va} VA`}{alreadyLinked?' · Já vinculada a outro circuito':''}</label>})}</div>})}
- <div className="sizing-metric"><span>Carga total associada</span><strong>{loadLinks.length?`${roomCalculation.va.toLocaleString('pt-BR')} VA`:'—'}</strong></div>
+ {environmentOptions.map(room=>{const estimate=estimateRoom(room);const specials=circuit==='tue'?roomSpecials(room.data||{}):[null];return <div className="ep-room-pick" key={room.id}><strong>{room.title}</strong>{specials.map((special,index)=>{const kind=circuit as RoomLoadKind;const link:CircuitLoadLink={environmentId:room.id,kind,...(kind==='tue'?{specialIndex:index}:{})};const va=kind==='tue'?Number(special?.power):estimate?.[kind];const valid=Number.isFinite(va)&&va>0;const selected=loadLinks.some(x=>loadKey(x)===loadKey(link));const alreadyLinked=savedCircuits.some(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)&&(x.data.loadLinks as CircuitLoadLink[]).some(y=>loadKey(y)===loadKey(link)||kind==='tug'&&y.environmentId===room.id&&y.kind==='tug'));return <label key={loadKey(link)}><input type="checkbox" disabled={!valid||alreadyLinked} checked={selected} onChange={e=>setLoadLinks(old=>e.target.checked?[...old,link]:old.filter(x=>loadKey(x)!==loadKey(link)))}/>{kind==='lighting'?'Iluminação':kind==='tue'?special?.name||'Uso específico':'Tomadas'} — {!valid?'Revisão manual':`${va} VA`}{alreadyLinked?' · Já vinculada a outro circuito':''}</label>})}</div>})}
+ {loadLinks.some(link=>link.kind==='tug'&&link.part!==undefined)&&<p className="hint" role="note">Distribuição automática de tomadas: {loadLinks.filter(link=>link.kind==='tug').length} ponto(s), com potência individual vinculada. Para redistribuir os pontos, revise os ambientes e gere novamente os circuitos após excluir os anteriores.</p>}<div className="sizing-metric"><span>Carga total associada</span><strong>{loadLinks.length?`${roomCalculation.va.toLocaleString('pt-BR')} VA`:'—'}</strong></div>
  {roomCalculation.missing.length>0&&<p role="alert" className="sizing-warning">Existem ambientes removidos ou cargas sem estimativa. Revise as associações antes de salvar.</p>}
  <p className="hint">Para o dimensionamento preliminar, P = S × fator de potência geral. As cargas mínimas em VA não são tratadas diretamente como W.</p></>}
  </div>
- <h3>Dados elétricos</h3><label>Quantidade de circuitos agrupados<select value={groupCount} onChange={e=>{setGroupCount(e.target.value);setTechnicalValidated(false)}}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label><div className="two">{loadMode==='manual'&&<label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label>}<label>Comprimento de ida (m){lengthEstimated?' — estimado':''}<input type="number" min="0" step="any" value={length} onChange={e=>{setLength(e.target.value);setLengthEstimated(false);setTechnicalValidated(false)}} placeholder="Ex.: 15"/></label></div>
+ <h3>Dados elétricos</h3><label>Quantidade de circuitos agrupados<select value={groupCount} onChange={e=>{setGroupCount(e.target.value);setTechnicalValidated(false)}}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label><div className="two">{loadMode==='manual'&&<label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label>}<label>Comprimento de ida (m) — opcional, somente para materiais<input type="number" min="0" step="any" value={length} onChange={e=>{setLength(e.target.value);setLengthEstimated(false);setTechnicalValidated(false)}} placeholder="Ex.: 15"/></label></div>
  {lengthEstimated&&<p className="hint" role="note">Percurso estimado: 5 m de alimentação presumida + maior dimensão de cada ambiente atendido. Não representa distância real do quadro. Ajuste o comprimento após verificar o trajeto.</p>}{loadMode==='rooms'&&<button type="button" className="outline" onClick={()=>{const n=estimateCircuitRoute(loadLinks,environmentOptions);if(n!==null){setLength(String(n));setLengthEstimated(true);setTechnicalValidated(false)}}}>Recalcular comprimento estimado</button>}<details className="ep-details"><summary>Parâmetros gerais utilizados</summary><p className="hint">Tensão: {voltage} V · Método: {method} · Temperatura: {temperature} °C · Material: {effectiveMaterial==='copper'?'cobre':'alumínio'}. Altere os padrões em Tipo de instalação.</p></details></section>
- <section className="panel sizing-results"><h2>Seção do condutor</h2><p className="hint">Pré-dimensionamento automático: confira percurso real, método de instalação, agrupamento, condições de proteção e capacidade de interrupção antes de validar.</p><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção do condutor/Bitola</span><strong>{selectedSection===null?'—':`${String(selectedSection).replace('.',',')} mm²`}</strong></div>
+ <section className="panel sizing-results"><h2>Seção do condutor</h2><p className="hint">Pré-dimensionamento automático por corrente e capacidade corrigida dos condutores, sem considerar comprimento ou queda de tensão. A queda de tensão deverá ser verificada separadamente antes da execução.</p><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção do condutor/Bitola</span><strong>{selectedSection===null?'—':`${String(selectedSection).replace('.',',')} mm²`}</strong></div>
  {candidate&&<label className="ep-sizing-validation"><input type="checkbox" checked={technicalValidated} onChange={e=>setTechnicalValidated(e.target.checked)}/> Conferi o percurso, a seção calculada e o disjuntor sugerido para este circuito.</label>}{noCompliantCandidate&&<div className="sizing-warning"><strong>Nenhuma seção aprovada no modelo experimental</strong><p>Não foi encontrada seção que atenda simultaneamente à corrente e ao limite provisório de 4% dentro da base provisória. Não use esse resultado para especificação.</p></div>}
  {current!==null&&!supported&&<div className="sizing-warning"><strong>Condição não contemplada</strong><p>Esta condição não está coberta pelas tabelas e hipóteses implementadas. Não é possível pré-selecionar a seção automaticamente.</p></div>}
  {noBreakerSolution&&<div className="sizing-warning"><strong>Sem combinação preliminar de cabo e disjuntor</strong><p>Há seção que atende à corrente e à queda estimada, mas nenhuma das seções disponíveis permite um disjuntor da lista com Ib ≤ In ≤ Iz. Não selecione um disjuntor acima da capacidade corrigida do condutor.</p></div>}
@@ -1101,7 +1132,7 @@ async function ensureEletriProject(clientId:string,userId:string){
 function generatedCircuitItems(c:SavedCircuit){
  const d=c.data||{},r=(d.results||{}) as Record<string,unknown>;
  const section=Number(r.selectedSection),breaker=Number(r.breaker),length=Number(d.length);
- if(!(section>0&&breaker>0&&length>0))return null;
+ if(!(section>0&&breaker>0))return null;
  const cfg=(d.installationSnapshot||defaultInstallation) as InstallationSettings;
  const wiring=String(d.wiring||cfg.wiring||'phase-neutral');
  const list=budgetCableItems({length,size:section,material:String(d.material||cfg.conductorMaterial||'copper'),insulation:String(d.insulation||cfg.conductorInsulation||'PVC 70 °C'),circuit:String(d.circuit||'tug'),wiring,breaker,curve:String(r.curve||'a confirmar'),poles:wiring==='phase-neutral'?1:wiring==='phase-phase'?2:3});
@@ -1750,8 +1781,9 @@ const sections=[
 return <div className="ep-terms-backdrop" role="presentation"><section className="ep-terms-dialog" role="dialog" aria-modal="true" aria-labelledby="ep-terms-title"><div className="ep-terms-heading"><span className="ep-terms-kicker">ELETRIPRO • CONDIÇÕES DE UTILIZAÇÃO</span><h2 id="ep-terms-title">Termo de Adesão e Uso</h2><p>Leia atentamente as condições de acesso, utilização técnica, contratação e proteção de dados.</p><small>Versão {ELETRIPRO_TERMS_VERSION} • Legislação brasileira</small></div><div className="ep-terms-content">{sections.map(([heading,body])=><section className="ep-terms-section" key={heading}><h3>{heading}</h3><p>{body}</p></section>)}<p className="ep-terms-note"><strong>Informação importante:</strong> este termo deve ser acompanhado de identificação do responsável legal pela plataforma, canais de suporte e aviso de privacidade antes de sua adoção definitiva.</p></div><div className="ep-terms-actions"><button type="button" className="primary" onClick={onClose}>Fechar</button></div></section></div>}
 
 function GoogleMark(){return <svg className="ep-google-mark" viewBox="0 0 48 48" aria-hidden="true"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6C44.4 38.03 46.98 31.88 46.98 24.55z"/><path fill="#FBBC05" d="M10.53 28.59A14.41 14.41 0 0 1 9.75 24c0-1.59.27-3.13.76-4.59l-7.98-6.2A23.88 23.88 0 0 0 0 24c0 3.87.93 7.51 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.92-2.13 15.89-5.8l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.97 6.19C6.51 42.62 14.62 48 24 48z"/></svg>}
-function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(()=>localStorage.getItem('ep_remember_email')||''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState(()=>sessionStorage.getItem('ep_active_tab')||'Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[financialPlan,setFinancialPlan]=useState('free'),[planLabel,setPlanLabel]=useState('Free'),[planExpires,setPlanExpires]=useState<string|null>(null),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false),[isAdmin,setIsAdmin]=useState(false),[adminAccessMode,setAdminAccessMode]=useState<'free'|'pro_isento'>('free'),[availablePlans,setAvailablePlans]=useState<AdminPlan[]>([]),[subscriptionRequests,setSubscriptionRequests]=useState<SubscriptionRequest[]>([]),[subscriptionBusy,setSubscriptionBusy]=useState(false);const[paymentHistory,setPaymentHistory]=useState<PaymentHistoryItem[]>([]),[paymentHistoryError,setPaymentHistoryError]=useState(''),[paymentStatusNotice,setPaymentStatusNotice]=useState(''),[paymentHistoryBusy,setPaymentHistoryBusy]=useState(false),[checkingPaymentId,setCheckingPaymentId]=useState<string|null>(null);const[freeCreatesUsed,setFreeCreatesUsed]=useState(0),[freeEditsUsed,setFreeEditsUsed]=useState(0),[clientFormOpen,setClientFormOpen]=useState(false);const[checkoutPlan,setCheckoutPlan]=useState<AdminPlan|null>(null);const[termsAccepted,setTermsAccepted]=useState(false),[termsOpen,setTermsOpen]=useState(false),[registrationComplete,setRegistrationComplete]=useState(false),[registrationBusy,setRegistrationBusy]=useState(false);
+function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=useState(()=>localStorage.getItem('ep_remember_email')||''),[password,setPassword]=useState(''),[mode,setMode]=useState<'login'|'signup'>('login'),[msg,setMsg]=useState(''),[tab,setTab]=useState(()=>sessionStorage.getItem('ep_active_tab')||'Painel'),[menu,setMenu]=useState(false),[clients,setClients]=useState<Client[]>([]),[plan,setPlan]=useState('free'),[financialPlan,setFinancialPlan]=useState('free'),[planLabel,setPlanLabel]=useState('Free'),[planExpires,setPlanExpires]=useState<string|null>(null),[name,setName]=useState(''),[phone,setPhone]=useState(''),[clientEmail,setClientEmail]=useState(''),[editing,setEditing]=useState<string|null>(null),[loading,setLoading]=useState(false),[professional,setProfessional]=useState(localStorage.getItem('ep_professional')||''),[accent,setAccent]=useState(localStorage.getItem('ep_accent')||'#a3a3a3'),[logo,setLogo]=useState(localStorage.getItem('ep_logo')||''),[fullName,setFullName]=useState(''),[mobile,setMobile]=useState(''),[cpf,setCpf]=useState(''),[birth,setBirth]=useState(''),[street,setStreet]=useState(''),[number,setNumber]=useState(''),[complement,setComplement]=useState(''),[neighborhood,setNeighborhood]=useState(''),[city,setCity]=useState(''),[state,setState]=useState(''),[document,setDocument]=useState<File|null>(null),[logoFile,setLogoFile]=useState<File|null>(null),[logoPath,setLogoPath]=useState(''),[accountMenu,setAccountMenu]=useState(false),[profileLoaded,setProfileLoaded]=useState(false),[profileError,setProfileError]=useState(''),[isAdmin,setIsAdmin]=useState(false),[adminAccessMode,setAdminAccessMode]=useState<'free'|'pro_isento'>('free'),[availablePlans,setAvailablePlans]=useState<AdminPlan[]>([]),[subscriptionRequests,setSubscriptionRequests]=useState<SubscriptionRequest[]>([]),[subscriptionBusy,setSubscriptionBusy]=useState(false);const[paymentHistory,setPaymentHistory]=useState<PaymentHistoryItem[]>([]),[paymentHistoryError,setPaymentHistoryError]=useState(''),[paymentStatusNotice,setPaymentStatusNotice]=useState(''),[paymentHistoryBusy,setPaymentHistoryBusy]=useState(false),[checkingPaymentId,setCheckingPaymentId]=useState<string|null>(null);const[freeCreatesUsed,setFreeCreatesUsed]=useState(0),[freeEditsUsed,setFreeEditsUsed]=useState(0),[clientFormOpen,setClientFormOpen]=useState(false);const[checkoutPlan,setCheckoutPlan]=useState<AdminPlan|null>(null);const[termsAccepted,setTermsAccepted]=useState(false),[termsOpen,setTermsOpen]=useState(false),[registrationComplete,setRegistrationComplete]=useState(false),[registrationBusy,setRegistrationBusy]=useState(false);
  useEffect(()=>{sessionStorage.setItem('ep_active_tab',tab)},[tab]);
+
  const [historyExpanded,setHistoryExpanded]=useState(false);
  const [rememberEmail,setRememberEmail]=useState(()=>Boolean(localStorage.getItem('ep_remember_email')));
  const [showPassword,setShowPassword]=useState(false);
@@ -1770,9 +1802,10 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
  const [workflowLoading,setWorkflowLoading]=useState(false);
  const [showEarnings,setShowEarnings]=useState(false);
  const [budgetItems,setBudgetItems]=useState<BudgetItem[]>([]);
- const [activeClientId,setActiveClientId]=useState<string|null>(null);
- const [reportMaintenanceMode,setReportMaintenanceMode]=useState(false);
- const [clientAreaTab,setClientAreaTab]=useState('Tipo de instalação');
+ const [activeClientId,setActiveClientId]=useState<string|null>(()=>sessionStorage.getItem('ep_active_client_id')||null);
+ const [reportMaintenanceMode,setReportMaintenanceMode]=useState(()=>sessionStorage.getItem('ep_maintenance_mode')==='true');
+ const [clientAreaTab,setClientAreaTab]=useState(()=>sessionStorage.getItem('ep_client_area_tab')||'Tipo de instalação');
+ useEffect(()=>{if(activeClientId)sessionStorage.setItem('ep_active_client_id',activeClientId);else sessionStorage.removeItem('ep_active_client_id');sessionStorage.setItem('ep_maintenance_mode',String(reportMaintenanceMode));sessionStorage.setItem('ep_client_area_tab',clientAreaTab)},[activeClientId,reportMaintenanceMode,clientAreaTab]);
  const budgetLoadedFor=React.useRef<string|null>(null);
  const clientAreaTabs=['Manutenção','Tipo de instalação','Ambientes','Dimensionamento','Quadro de distribuição','Materiais','Orçamento','Relatórios'];
  const clientAreaOpen=clientAreaTabs.includes(tab);
@@ -1839,7 +1872,7 @@ useEffect(()=>{if(!session?.user?.id||!supabase)return;let cancelled=false;const
 useEffect(()=>{if(!session?.user?.id||!supabase)return;const reload=()=>{supabase!.rpc('eletripro_admin_my_access').then(({data,error})=>{if(!error&&data?.is_admin){setAdminAccessMode(data.access_mode==='pro_isento'?'pro_isento':'free')}})};window.addEventListener('eletripro-admin-mode-changed',reload);return()=>window.removeEventListener('eletripro-admin-mode-changed',reload)},[session?.user?.id]);
 useEffect(()=>{if(tab==='Assinatura'&&session?.user?.id)void loadPaymentHistory()},[tab,session?.user?.id]);
 useEffect(()=>{if(!session?.user?.id)return;const reload=()=>{void refresh()};window.addEventListener('eletripro-profile-changed',reload);return()=>window.removeEventListener('eletripro-profile-changed',reload)},[session?.user?.id]);
-useEffect(()=>{if(session&&supabase)void refresh();else {setProfileLoaded(false);setLogo('');setLogoPath('');setProfessional('');setAccent('#a3a3a3')}},[session?.user?.id]);
+useEffect(()=>{if(session&&supabase){setProfileLoaded(false);setProfileError('');void refresh().catch(e=>{setProfileError(e instanceof Error?e.message:String(e));setProfileLoaded(true)})}else {setProfileLoaded(false);setProfileError('');setLogo('');setLogoPath('');setProfessional('');setAccent('#a3a3a3')}},[session?.user?.id]);
 async function loadWorkflows(){
  if(!supabase||!session?.user?.id)return;
  const r=await supabase.from('eletripro_client_workflow').select('client_id,status,budget_id,completed_at,amount,planned_start_date').eq('owner_id',session.user.id);
@@ -1916,7 +1949,7 @@ async function checkPaymentStatus(intentId:string){
  }catch(e){setPaymentStatusNotice('Falha na consulta: '+(e instanceof Error?e.message:String(e)))}
  finally{setCheckingPaymentId(null)}
 }
-async function refresh(){if(!supabase)return;const[{data:cs,error:ce},{data:profile}]=await Promise.all([supabase.from('clients').select('id,name,email,phone,location,edit_count').order('created_at',{ascending:false}),supabase.from('profiles').select('plan,pro_expires_at,free_client_creates_used,free_client_edits_used').single()]);if(ce)setMsg(ce.message);setClients(cs||[]);setFreeCreatesUsed(Number(profile?.free_client_creates_used||0));setFreeEditsUsed(Number(profile?.free_client_edits_used||0));setPlan(profile?.plan&&profile.plan!=='free'&&profile?.pro_expires_at&&new Date(profile.pro_expires_at)>new Date()?'pro':'free');setFinancialPlan(profile?.plan||'free');setPlanLabel(profile?.plan||'Free');setPlanExpires(profile?.pro_expires_at||null);await loadAccount();await loadWorkflows()}
+async function refresh(){if(!supabase)return;const[{data:cs,error:ce},{data:profile}]=await Promise.all([supabase.from('clients').select('id,name,email,phone,location,edit_count').order('created_at',{ascending:false}),supabase.from('profiles').select('plan,pro_expires_at,free_client_creates_used,free_client_edits_used').single()]);if(ce)setMsg(ce.message);setClients(cs||[]);if(activeClientId&&!(cs||[]).some(c=>c.id===activeClientId)){setActiveClientId(null);if(clientAreaTabs.includes(tab))setTab('Clientes')}setFreeCreatesUsed(Number(profile?.free_client_creates_used||0));setFreeEditsUsed(Number(profile?.free_client_edits_used||0));setPlan(profile?.plan&&profile.plan!=='free'&&profile?.pro_expires_at&&new Date(profile.pro_expires_at)>new Date()?'pro':'free');setFinancialPlan(profile?.plan||'free');setPlanLabel(profile?.plan||'Free');setPlanExpires(profile?.pro_expires_at||null);await loadAccount();await loadWorkflows()}
 function startMercadoPagoCheckout(planId:string){
  const selected=availablePlans.find(p=>p.id===planId&&p.active);
  if(!selected){setMsg('Plano indisponível. Atualize a página.');return}
@@ -1927,7 +1960,7 @@ async function auth(){if(!supabase)return;setLoading(true);setMsg('');if(mode===
 
 async function loadAccount(){if(!supabase||!session?.user?.id)return;const uid=session.user.id;
  const [{data:b,error:be},{data:d,error:de}]=await Promise.all([supabase.from('branding').select('professional_name,accent_color,logo_path').eq('user_id',uid).maybeSingle(),supabase.from('electrician_details').select('full_name,cpf,birth_date,phone,street,street_number,address_complement,neighborhood,city,state_code').eq('user_id',uid).maybeSingle()]);
- if(be||de){setMsg(be?.message||de?.message||'Erro ao carregar perfil');return}
+ if(be||de){setProfileError(be?.message||de?.message||'Erro ao carregar perfil');setProfileLoaded(true);return}setProfileError('');
  setProfessional(b?.professional_name||'');setAccent(b?.accent_color||'#a3a3a3');setLogoPath(b?.logo_path||'');
  if(b?.logo_path){const {data,error}=await supabase.storage.from('eletripro-logos').createSignedUrl(b.logo_path,3600);if(!error&&data)setLogo(data.signedUrl)}else setLogo('');
  setFullName(d?.full_name||session.user.user_metadata?.full_name||'');setCpf(d?.cpf||session.user.user_metadata?.cpf||'');setBirth(d?.birth_date||session.user.user_metadata?.birth_date||'');setMobile(formatMobile(d?.phone||session.user.user_metadata?.phone_contact||''));setStreet(d?.street||session.user.user_metadata?.street||'');setNumber(d?.street_number||session.user.user_metadata?.street_number||'');setComplement(d?.address_complement||session.user.user_metadata?.address_complement||'');setNeighborhood(d?.neighborhood||session.user.user_metadata?.neighborhood||'');setCity(d?.city||session.user.user_metadata?.city||'');setState(d?.state_code||session.user.user_metadata?.state_code||'');setRegistrationComplete(Boolean(d?.full_name?.trim()&&/^\d{11}$/.test(d?.cpf||'')&&d?.birth_date&&/^\d{11}$/.test(d?.phone||'')&&d?.street?.trim()&&d?.street_number?.trim()&&d?.neighborhood?.trim()&&d?.city?.trim()&&d?.state_code));setProfileLoaded(true)
@@ -1962,7 +1995,8 @@ const title=(t:string)=>sections.find(s=>s[0]===t)?.[1]||Zap;
 const nav=sections.filter(([t])=>!clientAreaTabs.includes(t)).map(([t,Icon])=><button key={t} className={'nav-item '+(tab===t?'active':'')} onClick={()=>navigate(t)}><Icon size={19}/><span>{t}</span></button>);
 if(!supabase)return <div className="center"><section className="auth-card"><div className="brand"><Zap/> EletriPro</div><h1>Configuração necessária</h1><p>Defina VITE_SUPABASE_URL e VITE_SUPABASE_ANON_KEY para conectar o Supabase.</p></section></div>;
 if(!session)return <div className="center"><section className="auth-card"><div className="brand"><Zap/> EletriPro</div><span className="eyebrow">PLATAFORMA PARA ELETRICISTAS</span><h1>{mode==='login'?'Bem-vindo de volta.':'Crie sua conta.'}</h1><p>Projetos, clientes e orçamentos em um só lugar.</p><button type="button" className="google ep-google-button" onClick={google}><GoogleMark/> Continuar com Google</button><div className="or">ou use seu e-mail</div>{mode==='signup'&&<><label>Nome completo<input value={fullName} onChange={e=>setFullName(e.target.value)} placeholder="Seu nome"/></label><div className="two"><label>CPF<input value={cpf} onChange={e=>setCpf(e.target.value)} placeholder="000.000.000-00" inputMode="numeric"/></label><label>Nascimento<input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></label></div><label>Telefone celular (DDD + número)<input type="tel" inputMode="tel" autoComplete="tel-national" maxLength={15} value={mobile} onChange={e=>setMobile(formatMobile(e.target.value))} placeholder="(48) 99999-9999"/></label><label>Endereço<input autoComplete="address-line1" value={street} onChange={e=>setStreet(e.target.value)} placeholder="Rua, avenida ou servidão"/></label><div className="address-pair"><label>Número<input autoComplete="address-line2" value={number} onChange={e=>setNumber(e.target.value)} placeholder="Nº ou S/N"/></label><label>Complemento (opcional)<input value={complement} onChange={e=>setComplement(e.target.value)} placeholder="Apto, bloco, casa..."/></label></div><label>Bairro<input autoComplete="address-level3" value={neighborhood} onChange={e=>setNeighborhood(e.target.value)} placeholder="Seu bairro"/></label><div className="address-city-state"><label>Cidade<input autoComplete="address-level2" value={city} onChange={e=>setCity(e.target.value)} placeholder="Cidade"/></label><label>Estado (UF)<select autoComplete="address-level1" value={state} onChange={e=>setState(e.target.value)}><option value="">Selecione</option>{statesBR.map(uf=><option key={uf} value={uf}>{uf}</option>)}</select></label></div><label className="upload"><Upload size={17}/> {document?document.name:'Selecionar documento com foto'}<input type="file" accept="image/png,image/jpeg,application/pdf" onChange={e=>setDocument(e.target.files?.[0]||null)}/></label><p className="hint">Protótipo: o documento não será enviado nem armazenado. A validação de identidade será implementada com armazenamento privado e consentimento.</p></> }<div className="ep-terms-consent"><label className="ep-terms-check"><input type="checkbox" checked={termsAccepted} onChange={e=>setTermsAccepted(e.target.checked)}/><span>Li e concordo com o <button type="button" className="ep-terms-link" onClick={()=>setTermsOpen(true)}>Termo de Adesão e Uso</button>.</span></label><small>Obrigatório para criar conta ou continuar com o Google.</small></div><label>E-mail<input type="email" autoComplete="username" value={email} onChange={e=>setEmail(e.target.value)} placeholder="voce@exemplo.com"/></label><label>Senha<input type={showPassword?"text":"password"} autoComplete={mode==='signup'?'new-password':'current-password'} value={password} onChange={e=>setPassword(e.target.value)} placeholder="Sua senha"/></label><div className="ep-auth-options"><label><input type="checkbox" checked={rememberEmail} onChange={e=>setRememberEmail(e.target.checked)}/> Lembrar e-mail</label><button type="button" className="link-button" onClick={()=>setShowPassword(v=>!v)} aria-pressed={showPassword}>{showPassword?"Ocultar senha":"Mostrar senha"}</button></div><p className="hint">Para lembrar sua senha com segurança, use o gerenciador de senhas do navegador. A sessão permanece conectada até sair da conta.</p><button disabled={loading} onClick={auth} className="primary">{mode==='login'?'Entrar':'Criar conta'} <ArrowRight size={17}/></button><button className="link-button" onClick={()=>{setMode(mode==='login'?'signup':'login');setMsg('')}}>{mode==='login'?'Ainda não tem conta? Cadastre-se':'Já tem conta? Entrar'}</button>{msg&&<div className="notice">{msg}</div>}{termsOpen&&<EletriProTerms onClose={()=>setTermsOpen(false)}/>}</section></div>;
-if(session && !profileLoaded)return <div className="center"><section className="auth-card"><h2>Carregando cadastro...</h2></section></div>;
+if(session && !profileLoaded)return <div className="ep-auth-wait" aria-label="Preparando sua área de trabalho"/>;
+if(session && profileError)return <div className="center"><section className="auth-card"><h2>Não foi possível abrir sua conta</h2><p>{profileError}</p><button className="primary" onClick={()=>void refresh().catch(e=>setProfileError(String(e)))}>Tentar novamente</button></section></div>;
 if(session && !registrationComplete)return <div className="center"><section className="auth-card ep-registration-card"><div className="brand"><Zap/> EletriPro</div><h1>Completar cadastro</h1><p>Para acessar sua conta Free, confirme os dados obrigatórios. Seus pagamentos e sua assinatura existente serão preservados.</p><form onSubmit={finishRegistration}>
 <label>Nome completo<input required value={fullName} onChange={e=>setFullName(e.target.value)}/></label>
 <div className="two"><label>CPF<input required inputMode="numeric" value={cpf} onChange={e=>setCpf(e.target.value)}/></label><label>Data de nascimento<input required type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></label></div>
