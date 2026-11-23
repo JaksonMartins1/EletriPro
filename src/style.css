@@ -218,3 +218,5 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-sub-status p{line-height:1.55}
 
 .ep-payment-status-notice{padding:12px 14px;margin:12px 0;border:1px solid #525866;border-radius:10px;background:#222831;color:#f3f4f6;font-size:14px;line-height:1.5}
+
+.ep-registration-card{width:min(94vw,680px);max-height:92vh;overflow-y:auto}.ep-registration-card form{display:grid;gap:12px}.ep-registration-card .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:520px){.ep-registration-card .two{grid-template-columns:1fr}}
