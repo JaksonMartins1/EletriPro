@@ -41,7 +41,10 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
  detail('Telefone: '+txt(doc.phone)+'   |   E-mail: '+txt(doc.email),16);
  detail('Emissão: '+new Date().toLocaleDateString('pt-BR'),16);
  for(const section of doc.sections){
-  ensure(120);y+=46;text(section.title,left,y,23,true);y+=16;ctx.strokeStyle=accent;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+contentW,y);ctx.stroke();y+=22;
+  const sectionTitleLines=wrap(section.title,contentW,23);
+  ensure(46+sectionTitleLines.length*29+40);y+=42;
+  for(const sectionTitleLine of sectionTitleLines){text(sectionTitleLine,left,y,23,true);y+=29}
+  ctx.strokeStyle=accent;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+contentW,y);ctx.stroke();y+=22;
   const material=section.kind==='materials';const cols=section.headers.length;
   let widths:number[];
   if(material){widths=cols===6?[112,490,105,80,132,135]:[130,690,120,114]}else if(section.title==='Circuitos dimensionados'){widths=[230,260,170,190,204]}else if(section.title==='Quadro de distribuição'){widths=[235,125,180,175,339]}else if(section.title==='Circuitos da instalação existente'&&cols===8)widths=[160,90,120,125,120,105,110,224];else if(section.title==='Proposta preliminar de adequação'&&cols===3)widths=[200,270,contentW-470];else if(cols===2)widths=[330,contentW-330];else widths=Array(cols).fill(contentW/cols);
@@ -62,7 +65,9 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
    let offset=0;
    const maxLines=Math.max(1,...lines.map(l=>l.length));
    while(offset<maxLines){
-    if(y+40>a4.h-bottom){start();text(section.title+' (continuação)',left,y+12,18,true);y+=26;header()}
+    if(y+40>a4.h-bottom){start();const continuationLines=wrap(section.title+' (continuação)',contentW,18);
+     for(const continuationLine of continuationLines){text(continuationLine,left,y+12,18,true);y+=24}
+     y+=8;header()}
     const available=Math.max(1,Math.floor((a4.h-bottom-y-16)/19));
     const count=Math.min(maxLines-offset,available);
     const h=Math.max(40,count*19+16);
@@ -77,7 +82,7 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
    }
   }
  }
- if(doc.total){ensure(52);y+=29;text('Total: '+doc.total,left+contentW,y,21,true,'right')}
+ if(doc.total){ensure(66);y+=18;ctx.fillStyle=accent;ctx.globalAlpha=.09;ctx.fillRect(left,y,contentW,53);ctx.globalAlpha=1;text('TOTAL DO ORÇAMENTO',left+16,y+33,15,true);text(doc.total,left+contentW-16,y+35,23,true,'right');y+=55}
  const disclaimer=wrap('Documento gerado com base nos dados cadastrados na EletriPro. Confira os cálculos e as condições reais de instalação. Não substitui projeto assinado ou ART.',contentW,14);
  ensure(42+23+disclaimer.length*19);y+=42;line(left,y,left+contentW,y);y+=23;
  for(const l of disclaimer){text(l,left,y,14);y+=19}

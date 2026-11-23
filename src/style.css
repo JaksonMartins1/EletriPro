@@ -290,3 +290,57 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .maintenance-price-table .maintenance-counter-actions{justify-content:center}
 .maintenance-price-table tfoot th{font-weight:700}
 .maintenance-price-table tfoot th:first-child{text-align:right}
+
+/* EletriPro — Experiência profissional 2026: painel e navegação */
+.app{--ep-bg:#0c1017;--ep-panel:#171e29;--ep-border:#2b3544;--ep-text:#f2f5f9;background:var(--ep-bg)}
+.app aside{background:#111822;border-right-color:#273344;gap:18px}
+.app .sidebar-head{padding:3px 6px 15px;border-bottom:1px solid #293344}
+.app .brand{letter-spacing:-.055em}.app .brand svg{color:#eab308}
+.app .nav-item{min-height:44px;border-radius:11px}.app .nav-item.active{background:#273443;color:#fff;box-shadow:inset 3px 0 #eab308}
+.app .topbar{background:#111822;border-bottom-color:#283343;min-height:72px}
+.app .content{max-width:1320px}.app .page-heading h1{font-size:clamp(26px,3vw,34px)}
+.ep-modern-home{display:grid;gap:22px;margin-bottom:24px}
+.ep-modern-hero{display:flex;align-items:center;justify-content:space-between;gap:24px;padding:30px 32px;border:1px solid #43516a;border-radius:22px;background:radial-gradient(circle at 88% 8%,#364c68 0,transparent 46%),linear-gradient(125deg,#1c2b3c,#141c29 75%);box-shadow:0 14px 40px #0002}
+.ep-modern-kicker{display:inline-flex;align-items:center;gap:8px;font-size:11px;font-weight:800;letter-spacing:1.3px;color:#f0c860}
+.ep-modern-hero h2{font-size:clamp(24px,3vw,34px);letter-spacing:-.045em;margin:12px 0 8px;color:#fff}
+.ep-modern-hero p{max-width:550px;color:#bac6d6;margin:0;font-size:14px}
+.ep-modern-hero-action{display:inline-flex;align-items:center;justify-content:center;gap:9px;background:#eab308;border:0;border-radius:12px;padding:14px 18px;min-height:48px;color:#19170b;font-weight:800;white-space:nowrap}
+.ep-modern-section-title{display:flex;justify-content:space-between;align-items:center;gap:12px}.ep-modern-section-title h2{font-size:19px;letter-spacing:-.025em;margin:0 0 5px}.ep-modern-section-title p{margin:0;color:#9baabd;font-size:13px}.ep-modern-section-title>button{display:inline-flex;align-items:center;gap:7px;border:0;background:transparent;color:#f1c44e;font-weight:700;padding:9px}
+.ep-modern-shortcuts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:13px}
+.ep-modern-shortcuts>button{position:relative;display:flex;flex-direction:column;align-items:flex-start;gap:7px;text-align:left;min-height:152px;border:1px solid #303d4f;border-radius:17px;padding:18px;background:#182230;color:#f5f7fb;transition:transform .16s,border-color .16s,background .16s}
+.ep-modern-shortcuts>button:hover{border-color:#d6ac36;background:#202d3c;transform:translateY(-2px)}.ep-modern-shortcuts strong{font-size:15px;margin-top:6px}.ep-modern-shortcuts small{font-size:12px;color:#a5b4c6}.ep-shortcut-icon{width:42px;height:42px;display:grid;place-items:center;border-radius:12px;background:#334255;color:#f0c75a}.ep-shortcut-arrow{position:absolute;right:15px;top:23px;color:#8798ad}
+.ep-modern-recent{border:1px solid #303b4b;border-radius:18px;background:#151e2a;padding:22px}.ep-modern-recent-list{display:grid;gap:6px;margin-top:15px}.ep-modern-recent-list>button{display:flex;align-items:center;gap:12px;border:0;border-radius:12px;padding:12px;background:transparent;color:#f5f6f8;text-align:left}.ep-modern-recent-list>button:hover{background:#253346}.ep-modern-recent-list>button>span:nth-child(2){display:grid;gap:4px;flex:1;min-width:0}.ep-modern-recent-list small{color:#a2b0c0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.ep-modern-initial{display:grid;place-items:center;flex:none;width:42px;height:42px;border-radius:12px;background:#334357;color:#f1ce75;font-weight:800}.ep-modern-empty{display:flex;align-items:center;gap:16px;padding:22px 0 2px}.ep-modern-empty>svg{color:#eab308;flex:none}.ep-modern-empty>div{flex:1}.ep-modern-empty strong{font-size:14px}.ep-modern-empty p{margin:5px 0 0;font-size:12px}.ep-modern-empty button{border:1px solid #58657a;border-radius:10px;padding:11px 13px;color:#f3f5f8;background:#263346;font-weight:700;white-space:nowrap}
+.ep-mobile-bottom-nav{display:none}
+@media(max-width:1050px){.ep-modern-shortcuts{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:720px){.app .content{padding:21px 15px 105px}.app .page-heading{margin-bottom:17px}.ep-modern-home{gap:18px}.ep-modern-hero{padding:23px 20px;flex-direction:column;align-items:stretch;gap:18px}.ep-modern-hero-action{width:100%}.ep-modern-shortcuts{gap:10px}.ep-modern-shortcuts>button{padding:15px;min-height:136px}.ep-modern-recent{padding:17px}.ep-modern-empty{flex-wrap:wrap}.ep-modern-empty button{width:100%}.ep-mobile-bottom-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));position:fixed;bottom:0;left:0;right:0;z-index:45;padding:7px 9px max(7px,env(safe-area-inset-bottom));border-top:1px solid #334155;background:#121c29f7;backdrop-filter:blur(16px);box-shadow:0 -8px 30px #0005}.ep-mobile-bottom-nav button{display:grid;place-items:center;gap:4px;min-height:51px;border:0;border-radius:10px;background:transparent;color:#a9b7c8;font-size:11px;font-weight:700}.ep-mobile-bottom-nav button.active{color:#f5ce65;background:#263649}.app aside.open{z-index:70}.app .scrim{z-index:65}}
+@media(max-width:370px){.ep-modern-shortcuts strong{font-size:13px}.ep-modern-shortcuts small{font-size:11px}.ep-modern-hero h2{font-size:23px}}
+@media(prefers-reduced-motion:reduce){.ep-modern-shortcuts>button{transition:none}.ep-modern-shortcuts>button:hover{transform:none}}
+
+/* Modernização fase 2 — busca rápida de clientes */
+.ep-client-search{display:flex;align-items:center;gap:10px;margin:16px 0 20px;padding:0 14px;border:1px solid var(--line,#d8dce3);border-radius:14px;background:var(--panel,#fff);min-height:50px}
+.ep-client-search:focus-within{outline:2px solid var(--accent,#f4b400);outline-offset:1px}
+.ep-client-search input{flex:1;min-width:0;width:100%;border:0!important;box-shadow:none!important;outline:none!important;background:transparent!important;padding:12px 0!important;font:inherit}
+.ep-client-search button{border:0;background:transparent;display:grid;place-items:center;cursor:pointer;padding:8px}
+@media(max-width:640px){.ep-client-search{margin:14px 0;min-height:52px}.ep-client-search input{font-size:16px}}
+
+/* Atendimento rápido após cadastro: etapa 3 da modernização */
+.ep-next-action{display:flex;justify-content:space-between;align-items:center;gap:20px;flex-wrap:wrap;border:1px solid rgba(245,185,55,.35);background:linear-gradient(120deg,rgba(245,185,55,.09),transparent)}
+.ep-next-action h2{margin:5px 0}.ep-next-action p{margin:0;opacity:.8}
+.ep-next-action-buttons{display:flex;gap:8px;flex-wrap:wrap}
+.ep-next-action-buttons button{display:inline-flex;align-items:center;justify-content:center;gap:7px}
+@media(max-width:700px){.ep-next-action-buttons{width:100%;display:grid;grid-template-columns:1fr 1fr}.ep-next-action-buttons button:last-child{grid-column:1/-1}}
+
+/* Navegação por etapas no levantamento de manutenção — versão 4 */
+.ep-maint-nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:16px 0 22px}
+.ep-maint-nav button{display:flex;align-items:center;justify-content:center;gap:8px;min-height:48px;white-space:normal;text-align:center}
+.ep-maint-nav button span{display:inline-grid;place-items:center;flex:none;width:25px;height:25px;border-radius:50%;background:rgba(240,185,49,.15);font-weight:700}
+.ep-maint-anchor{scroll-margin-top:90px}
+@media(max-width:700px){.ep-maint-nav{grid-template-columns:repeat(2,minmax(0,1fr))}.ep-maint-nav button{font-size:13px}}
+
+/* Conferência imediata de valores — modernização etapa 5 */
+.ep-budget-glance{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0 18px}
+.ep-budget-glance>div{display:flex;flex-direction:column;gap:6px;border:1px solid rgba(150,150,150,.18);border-radius:12px;padding:12px;min-width:0}
+.ep-budget-glance span{font-size:12px;opacity:.75}
+.ep-budget-glance strong{font-size:clamp(16px,2vw,22px);overflow-wrap:anywhere}
+.ep-budget-glance-total{background:rgba(235,184,62,.1)}
+@media(max-width:700px){.ep-budget-glance{grid-template-columns:1fr 1fr}.ep-budget-glance-total{grid-column:1/-1}}
