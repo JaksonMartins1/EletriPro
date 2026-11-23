@@ -60,7 +60,18 @@ export default function IntegratedCheckout({plan,userId,isAdmin,onClose,onActiva
    setResult(r);
    if(r.intent_id)sessionStorage.setItem(`${storageKey}:intent`,r.intent_id);
    if(r.applied){clearKey(storageKey);await onActivated();setMessage('Assinatura já ativada.')}else setMessage(r.pix?.qr_code?(isProduction?'PIX gerado. A assinatura será ativada após a confirmação.':'PIX de teste gerado. Não pague com dinheiro real.'):'Order registrada. Consulte o status; se não houver QR Code, confira a resposta da função.');
-  }catch(e){setMessage((e instanceof Error?e.message:String(e))+' A tentativa foi preservada para evitar duplicidade. Não tente novamente até verificar o registro no Supabase.');}
+  }catch(e){
+   const failure=e as Error & {paymentStatus?:string;intentId?:string};
+   if(failure.intentId){
+    // Falha de criação pode ter gerado uma Order: preservar a intent para consulta,
+    // nunca reenviar a cobrança com outra chave sem verificar o status.
+    sessionStorage.setItem(`${storageKey}:intent`,failure.intentId);
+    setResult({intent_id:failure.intentId,status:failure.paymentStatus||'creating'});
+    setMessage((failure.message||'Falha ao criar cobrança')+' Consulte a tentativa existente para verificar o status antes de gerar outro PIX.');
+   }else{
+    setMessage((e instanceof Error?e.message:String(e))+' Não gere outra cobrança antes de verificar o histórico.');
+   }
+  }
   finally{setBusy(false)}
  }
  async function createCard(event:React.FormEvent){event.preventDefault();if(submittingRef.current)return;if(result?.intent_id){await checkStatus(result.intent_id);return}if(!formRef.current||!cardReady){setMessage('Aguarde os campos seguros do cartão.');return}submittingRef.current=true;setBusy(true);setMessage('Validando os dados do cartão...');try{const values=formRef.current.getCardFormData();const installments=Number(values.installments);if(!Number.isInteger(installments)||installments<1||installments>12)throw new Error('Selecione uma opção válida de parcelas.');if(plan.price_cents===100&&installments!==1)throw new Error('O Plano Tensão de R$ 1,00 deve ser pago em parcela única.');if(!String(values.paymentMethodId||'').trim())throw new Error('Aguarde a identificação da bandeira do cartão.');if(!String(values.identificationType||'').trim()||!String(values.identificationNumber||'').trim())throw new Error('Informe o documento do titular.');if(!values.token)throw new Error('Não foi possível tokenizar o cartão. Verifique os dados.');if(!canUsePaymentEnvironment)throw new Error(isPilot?'Checkout piloto disponível somente para a conta autorizada.':'Cartão em homologação: acesso exclusivo do administrador.');const r=await invoke(createFunction,{plan_id:plan.id,payment_method:'credit_card',request_key:getKey(storageKey),card:{token:values.token,payment_method_id:values.paymentMethodId,issuer_id:values.issuerId,installments,identification:{type:values.identificationType,number:values.identificationNumber}}});setResult(r);if(r.intent_id)sessionStorage.setItem(`${storageKey}:intent`,r.intent_id);if(r.applied){clearKey(storageKey);await onActivated();setMessage('Pagamento aprovado! Assinatura ativada.')}else setMessage(isProduction?'Order de cartão registrada. Consulte o status antes de outra tentativa.':'Order de cartão registrada em homologação. Consulte o status antes de outra tentativa.')}catch(e){const failure=e as Error & {paymentStatus?:string;intentId?:string};if(failure.paymentStatus==='rejected' && failure.intentId){clearKey(storageKey);sessionStorage.removeItem(`${storageKey}:intent`);setResult(null);setMessage('A tentativa anterior foi rejeitada e encerrada. Uma nova chave será usada. Confira os dados e clique novamente em Pagar com cartão para criar uma nova tentativa.')}else{setMessage((e instanceof Error?e.message:String(e))+' Se houve falha de rede, consulte o pagamento antes de tentar novamente.')}}finally{submittingRef.current=false;setBusy(false)}}
