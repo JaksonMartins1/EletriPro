@@ -220,3 +220,16 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-payment-status-notice{padding:12px 14px;margin:12px 0;border:1px solid #525866;border-radius:10px;background:#222831;color:#f3f4f6;font-size:14px;line-height:1.5}
 
 .ep-registration-card{width:min(94vw,680px);max-height:92vh;overflow-y:auto}.ep-registration-card form{display:grid;gap:12px}.ep-registration-card .two{display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:520px){.ep-registration-card .two{grid-template-columns:1fr}}
+
+/* Termo de Adesão — apresentação editorial */
+.ep-terms-heading{padding:4px 0 14px;border-bottom:1px solid rgba(127,127,127,.18);margin-bottom:16px}
+.ep-terms-kicker{display:block;font-size:.72rem;font-weight:750;letter-spacing:.09em;text-transform:uppercase;opacity:.7;margin-bottom:8px}
+.ep-terms-heading h2{margin:0 0 9px;line-height:1.2}
+.ep-terms-heading p{margin:0 0 8px;opacity:.82;line-height:1.5}
+.ep-terms-heading small{opacity:.68}
+.ep-terms-section{padding:13px 0;border-bottom:1px solid rgba(127,127,127,.13)}
+.ep-terms-section h3{font-size:1rem;margin:0 0 8px;font-weight:750;line-height:1.4}
+.ep-terms-section p{margin:0;line-height:1.72}
+.ep-terms-note{margin:18px 0 6px;padding:12px 14px;border:1px solid rgba(127,127,127,.22);border-radius:10px;line-height:1.55}
+
+.ep-payment-approved{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;padding:46px 20px 38px}.ep-payment-approved svg{color:#16a34a}.ep-payment-approved h2{font-size:1.55rem;font-weight:850;color:#16a34a;margin:0;letter-spacing:.035em}.ep-payment-approved p{margin:0 0 12px;opacity:.82}.ep-payment-approved button{min-width:180px}.ep-pix-brand{width:22px;height:22px;object-fit:contain;vertical-align:middle}
