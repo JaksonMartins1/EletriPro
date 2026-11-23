@@ -61,8 +61,28 @@ type BudgetItem={id:string;description:string;unit:string;quantity:number;unitPr
 // O projeto deve confirmar condições de instalação e eventual cálculo adiabático.
 const standardPeSections=[1.5,2.5,4,6,10,16,25,35,50,70,95,120,150,185,240,300];
 const peSection=(phase:number)=>{const required=phase<=16?phase:phase<=35?16:phase/2;return standardPeSections.find(v=>v>=required)||required;};
-const budgetCableItems=(params:{length:number;size:number;material:string;insulation:string;circuit:string;wiring:string;breaker:number;curve:string;poles:number}):BudgetItem[]=>{
+type CatalogDescription={category:string;name:string;section_mm2:number|null;nominal_a:number|null;poles:number|null;curve:string|null;material:string|null;insulation:string|null;active:boolean};
+const catalogKey=(v:unknown)=>String(v??'').normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase().replace(/[^a-z0-9]+/g,'');
+const catalogCableDescription=(catalog:CatalogDescription[],section:number,material:string,insulation:string)=>{
+ const matches=catalog.filter(x=>x.category==='cabo'&&x.active&&x.section_mm2!==null&&Math.abs(Number(x.section_mm2)-section)<0.001);
+ const exact=matches.find(x=>(!x.material||catalogKey(x.material)===catalogKey(material==='copper'?'cobre':'alumínio')||catalogKey(x.material)===catalogKey(material))&&(!x.insulation||catalogKey(x.insulation)===catalogKey(insulation)));
+ return exact?.name||null;
+};
+const catalogBreakerDescription=(catalog:CatalogDescription[],breaker:number,poles:number,curve:string)=>{
+ const matches=catalog.filter(x=>x.category==='disjuntor'&&x.active&&x.nominal_a!==null&&Math.abs(Number(x.nominal_a)-breaker)<0.001);
+ const exact=matches.find(x=>(x.poles===null||Number(x.poles)===poles)&&(!x.curve||catalogKey(x.curve)===catalogKey(curve)));
+ return exact?.name||null;
+};
+const loadActiveElectricalCatalog=async():Promise<CatalogDescription[]>=>{
+ if(!supabase)return [];
+ const {data,error}=await supabase.from('eletripro_electrical_catalog').select('category,name,section_mm2,nominal_a,poles,curve,material,insulation,active').eq('active',true);
+ // Catálogo não instalado ou inacessível: manter as descrições originais.
+ if(error)return [];
+ return (data||[]) as CatalogDescription[];
+};
+const budgetCableItems=(params:{length:number;size:number;material:string;insulation:string;circuit:string;wiring:string;breaker:number;curve:string;poles:number;catalog?:CatalogDescription[]}):BudgetItem[]=>{
  const {length,size,material,insulation,circuit,wiring,breaker,curve,poles}=params;
+ const catalog=params.catalog||[];
  const base=`Cabo flexível de ${material==='copper'?'cobre':'alumínio'} ${insulation}`;
  const fmtSize=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:2,minimumFractionDigits:1});
  const specs:{functionName:string;color:string;section:number}[]=[];
@@ -76,8 +96,8 @@ const budgetCableItems=(params:{length:number;size:number;material:string;insula
  if(circuit==='lighting')specs.push({functionName:'Retorno',color:'amarelo',section:size});
  if(circuit!=='lighting')specs.push({functionName:'Proteção (PE)',color:'verde',section:peSection(size)});
  const stamp=Date.now().toString(36);
- const items=specs.map((spec,i)=>({id:`cabo-${stamp}-${i}`,description:`${base} ${fmtSize(spec.section)} mm² — ${spec.color} (${spec.functionName})`,unit:'m',quantity:Math.round(length*100)/100,unitPrice:0}));
- items.push({id:`dj-${stamp}`,description:`Disjuntor ${breaker} A · curva ${curve||'a confirmar'} (${poles} ${poles===1?'polo':'polos'})`,unit:'un',quantity:1,unitPrice:0});
+ const items=specs.map((spec,i)=>({id:`cabo-${stamp}-${i}`,description:`${catalogCableDescription(catalog,spec.section,material,insulation)||`${base} ${fmtSize(spec.section)} mm²`} — ${spec.color} (${spec.functionName})`,unit:'m',quantity:Math.round(length*100)/100,unitPrice:0}));
+ items.push({id:`dj-${stamp}`,description:catalogBreakerDescription(catalog,breaker,poles,curve)||`Disjuntor ${breaker} A · curva ${curve||'a confirmar'} (${poles} ${poles===1?'polo':'polos'})`,unit:'un',quantity:1,unitPrice:0});
  return items;
 };
 const moneyBR=(n:number)=>n.toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
@@ -238,7 +258,7 @@ function estimateCircuitRoute(links:CircuitLoadLink[],rooms:SavedEnvironment[]){
 }
 function previewRoomSizing(kind:string,va:number,length:number,settings:InstallationSettings,title:string){
  const voltage=Number(settings.voltage),pf=Number(settings.powerFactor),group=grouping5410[settings.groupMode]?.[settings.groupCount],temp=temperature5410[settings.conductorInsulation]?.[settings.temperature];
- const supported=Boolean(ampacity5410[settings.conductorInsulation]?.[settings.conductorMaterial]?.[settings.method]?.['2'])&&group!==undefined&&temp!==undefined&&(settings.groupMode==='bundle'||(settings.method==='C'&&settings.groupMode==='singleLayer'))&&settings.supply!=='three';
+ const supported=Boolean(ampacity5410[settings.conductorInsulation]?.[settings.conductorMaterial]?.[settings.method]?.['2'])&&group!==undefined&&temp!==undefined&&(settings.groupMode==='bundle'||(settings.method==='C'&&settings.groupMode==='singleLayer'));
  if(!supported||!(va>0&&voltage>0&&pf>0&&pf<=1))return null;
  const current=va/voltage;const minSize=settings.conductorMaterial==='aluminum'?16:kind==='lighting'?1.5:2.5;
  const rho=settings.conductorMaterial==='copper'?0.0175:0.0282,alpha=settings.conductorMaterial==='copper'?0.00393:0.00403,conductorTemp=settings.conductorInsulation==='PVC 70 °C'?70:90;
@@ -254,6 +274,30 @@ function previewRoomSizing(kind:string,va:number,length:number,settings:Installa
  return null;
 }
 type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
+// Fonte única de dimensionamento dos circuitos terminais do projeto.
+// Nunca utiliza data.results como origem de seção ou disjuntor: resultados antigos
+// são somente histórico. O mesmo cálculo alimenta Dimensionamento e Quadro.
+function liveCircuitSizing(row:SavedCircuit,settings:InstallationSettings,rooms?:SavedEnvironment[]){
+ const d=row.data||{};
+ const kind=String(d.circuit||(/ilumina/i.test(row.title)?'lighting':'tug'));
+ // Resolve a carga a partir dos ambientes atuais, quando disponíveis.
+ // Nunca reutiliza o valor persistido como se fosse um cálculo atualizado.
+ const linked=d.loadMode==='rooms'&&Array.isArray(d.loadLinks)&&rooms?linkedLoads(d.loadLinks as CircuitLoadLink[],rooms):null;
+ if(linked&&linked.missing.length>0)return null;
+ const va=linked?linked.va:Number(d.powerVA)>0?Number(d.powerVA):Number(d.power)>0?Number(d.power)/(Number(d.pf)||Number(settings.powerFactor)):NaN;
+ // Dimensionar na tensão e com os condutores do circuito, não com a ligação geral.
+ const wiring=String(d.wiring||settings.wiring||'phase-neutral');
+ const voltage=wiring==='phase-neutral'
+  ? (settings.supply==='single'?Number(settings.voltage):Number(settings.voltageFN))
+  : Number(settings.voltageFF);
+ if(!Number.isFinite(voltage)||voltage<=0)return null;
+ const localSettings={...settings,voltage:String(voltage),conductorMaterial:String(d.material||settings.conductorMaterial),conductorInsulation:String(d.insulation||settings.conductorInsulation),groupCount:String(d.groupCount||settings.groupCount)};
+ // A rotina preliminar usa dois condutores carregados. Circuitos trifásicos
+ // exigem tabela de três condutores e não podem receber uma seleção incorreta.
+ if(wiring==='three')return null;
+ return previewRoomSizing(kind,va,0,localSettings,row.title);
+}
+
 function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings;clientId:string;userId:string}){
  const [editorOpen,setEditorOpen]=useState(false);
  const [viewMode,setViewMode]=useState(false);
@@ -276,12 +320,8 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   // mesmos parâmetros atuais da aba Tipo de instalação, não resultados antigos
   // persistidos em data.results. A edição utiliza esses mesmos parâmetros.
   const displayedSizing=(row:SavedCircuit)=>{
-    const d=row.data||{};
-    const kind=String(d.circuit||(/ilumina/i.test(row.title)?'lighting':'tug'));
-    const linked=d.loadMode==='rooms'&&Array.isArray(d.loadLinks)?linkedLoads(d.loadLinks as CircuitLoadLink[],environmentOptions):null;
-    const va=linked&&linked.missing.length===0&&linked.va>0?linked.va:Number(d.powerVA)>0?Number(d.powerVA):Number(d.power)>0?Number(d.power)/Number(settings.powerFactor):NaN;
-    const calculated=previewRoomSizing(kind,va,0,settings,row.title);
-    return calculated?{section:calculated.selectedSection,breaker:calculated.breaker}:null;
+    const live=liveCircuitSizing(row,settings,environmentOptions);
+    return live?{section:live.selectedSection,breaker:live.breaker}:null;
   };
   const selectSavedCircuit=(row:SavedCircuit)=>{
     const d=row.data||{};
@@ -412,7 +452,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
     if(result.error)setCircuitStatus('Erro ao salvar circuito: '+result.error.message);
-    else if(result.data){const saved=result.data as SavedCircuit;setSavedCircuits(old=>selectedCircuitId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedCircuitId(saved.id);setEditorOpen(false);setViewMode(false);try{await syncCircuitMaterials(project.id,saved);await syncUnifiedBudget(project.id);setCircuitStatus('Circuito e materiais atualizados automaticamente.')}catch(e){setCircuitStatus('Circuito salvo, mas a atualização dos materiais falhou: '+(e instanceof Error?e.message:String(e)))}}
+    else if(result.data){const saved=result.data as SavedCircuit;setSavedCircuits(old=>selectedCircuitId?old.map(x=>x.id===saved.id?saved:x):[...old,saved]);setSelectedCircuitId(saved.id);setEditorOpen(false);setViewMode(false);try{await syncCircuitMaterials(project.id,saved,undefined,settings,environmentOptions);await syncUnifiedBudget(project.id);setCircuitStatus('Circuito e materiais atualizados automaticamente.')}catch(e){setCircuitStatus('Circuito salvo, mas a atualização dos materiais falhou: '+(e instanceof Error?e.message:String(e)))}}
     setCircuitBusy(false);
   }
   async function deleteCircuit(){
@@ -456,10 +496,10 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const effectiveInsulation=settings.conductorInsulation;
  const effectiveGroupCount=settings.groupCount;
  const effectivePf=settings.powerFactor;
- const phases=settings.supply==='three'?'three':'single';
- const loaded=settings.supply==='three'?'3':'2';
+ const phases=effectiveWiring==='three'?'three':'single';
+ const loaded=effectiveWiring==='three'?'3':'2';
  const voltage=settings.voltage;
- const effectiveWiring=settings.supply==='single'?'phase-neutral':settings.supply==='three'?'three':settings.wiring;
+ const effectiveWiring=settings.wiring==='three'?'phase-neutral':settings.wiring;
  const num=(x:string)=>x.trim()===''?NaN:Number(x.replace(',','.'));
  const p=num(powerForSizing),v=num(voltage),f=num(effectivePf),l=num(length);
  const ft=temperature5410[effectiveInsulation]?.[temperature];
@@ -499,6 +539,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const minBreaker=(_size:number)=>circuit==='lighting'?10:circuit==='tug'&&kitchenLaundry?20:(circuit==='tug'||circuit==='tue')?16:6;
  // Integração: testar cada seção comercial em ordem crescente, exigindo capacidade,
  // queda de tensão e um In que satisfaça Ib ≤ In ≤ Iz.
+ const sharedSizing=valid?previewRoomSizing(circuit,Number(p)/Number(f),0,settings,circuitTitle):null;
  const coordinated=candidates.map(x=>({
    ...x,
    breaker:x.ampacityOk&&x.dropOk&&current!==null
@@ -511,7 +552,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
    const reason=!x.ampacityOk?'Capacidade de corrente insuficiente':inRating===null?'Sem disjuntor compatível na lista':'Atende à capacidade de corrente e coordenação preliminar';
    return {...x,inRating,reason};
  });
- const candidate=coordinated;
+ const candidate=sharedSizing?candidates.map(x=>({...x,breaker:sharedSizing.breaker})).find(x=>x.size===sharedSizing.selectedSection)??null:null;
  const selectedSection=candidate?.size??null;
  const base=candidate?.iz0??null;
  const corrected=candidate?.iz??null;
@@ -556,7 +597,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  {noCompliantCandidate&&<div className="sizing-warning"><strong>Nenhuma seção aprovada no modelo experimental</strong><p>Não foi encontrada seção que atenda simultaneamente à corrente e ao limite provisório de 4% dentro da base provisória. Não use esse resultado para especificação.</p></div>}
  {current!==null&&!supported&&<div className="sizing-warning"><strong>Condição não contemplada</strong><p>Esta condição não está coberta pelas tabelas e hipóteses implementadas. Não é possível pré-selecionar a seção automaticamente.</p></div>}
  {noBreakerSolution&&<div className="sizing-warning"><strong>Sem combinação preliminar de cabo e disjuntor</strong><p>Há seção que atende à corrente e à queda estimada, mas nenhuma das seções disponíveis permite um disjuntor da lista com Ib ≤ In ≤ Iz. Não selecione um disjuntor acima da capacidade corrigida do condutor.</p></div>}
- {selectedCircuitId&&candidate!==null&&breakerCandidate!==null&&Number.isFinite(l)&&l>0&&<div className="sizing-formula"><strong>Enviar materiais ao cadastro do projeto</strong><p className="hint">Cabos separados por função e cor, com metragem inicial igual ao comprimento de ida para cada condutor. Ajuste cada quantidade e preço em Materiais. Em iluminação, o retorno é estimado com o mesmo comprimento; confirme o percurso real. A seção do PE é preliminar. Não inclui perdas nem reserva técnica.</p><button type="button" className="primary" disabled={materialSending} onClick={()=>void sendSizingMaterials(budgetCableItems({length:l,size:candidate.size,material:effectiveMaterial,insulation:effectiveInsulation,circuit,wiring:effectiveWiring,breaker:breakerCandidate,curve:tripCurve||'a confirmar',poles:effectiveWiring==='phase-neutral'?1:effectiveWiring==='phase-phase'?2:3}))}>{materialSending?'Salvando...':'Consolidar materiais deste circuito'}</button></div>}
+ {selectedCircuitId&&candidate!==null&&breakerCandidate!==null&&Number.isFinite(l)&&l>0&&<div className="sizing-formula"><strong>Enviar materiais ao cadastro do projeto</strong><p className="hint">Cabos separados por função e cor, com metragem inicial igual ao comprimento de ida para cada condutor. Ajuste cada quantidade e preço em Materiais. Em iluminação, o retorno é estimado com o mesmo comprimento; confirme o percurso real. A seção do PE é preliminar. Não inclui perdas nem reserva técnica.</p><button type="button" className="primary" disabled={materialSending} onClick={()=>void (async()=>{const catalog=await loadActiveElectricalCatalog();await sendSizingMaterials(budgetCableItems({length:l,size:candidate.size,material:effectiveMaterial,insulation:effectiveInsulation,circuit,wiring:effectiveWiring,breaker:breakerCandidate,curve:tripCurve||'a confirmar',poles:effectiveWiring==='phase-neutral'?1:effectiveWiring==='phase-phase'?2:3,catalog}));})()}>{materialSending?'Salvando...':'Consolidar materiais deste circuito'}</button></div>}
  {candidate!==null&&current!==null&&<details className="sizing-formula"><summary>Ver memória de seleção automática</summary>
  <p>1. Corrente de projeto: Ib = {fmt(current)} A. Seção mínima considerada: {String(minSection).replace('.',',')} mm².</p>
  <p>2. Capacidade corrigida: Iz = Iz₀ × Ft × Fg, com Ft = {fmt(ft!)} e Fg = {fmt(fg!)}.</p>
@@ -687,10 +728,11 @@ const demandCircuitVA=(row:SavedCircuit,defaultPf:number)=>{
  return Number.isFinite(w)&&w>0&&Number.isFinite(pf)&&pf>0&&pf<=1?w/pf:0;
 };
 const demandCircuitSource=(row:SavedCircuit)=>Number(row.data.powerVA)>0?'Carga em VA registrada no circuito':'Potência W convertida usando fator de potência cadastrado';
-const demandCircuitIssues=(row:SavedCircuit,defaultPf:number)=>{
+const demandCircuitIssues=(row:SavedCircuit,defaultPf:number,rooms?:SavedEnvironment[])=>{
  const issues:string[]=[];
  if(!['lighting','tug','tue'].includes(String(row.data.circuit||'').toLowerCase()))issues.push('Tipo de circuito não classificado');
- if(demandCircuitVA(row,defaultPf)<=0)issues.push('Potência aparente não disponível');
+ if(!(row.data.loadMode==='rooms'&&rooms?linkedLoads((row.data.loadLinks||[]) as CircuitLoadLink[],rooms).va>0:demandCircuitVA(row,defaultPf)>0))issues.push('Potência aparente não disponível');
+ if(row.data.loadMode==='rooms'&&rooms&&linkedLoads((row.data.loadLinks||[]) as CircuitLoadLink[],rooms).missing.length)issues.push('Ambiente ou potência vinculada indisponível');
  if(row.data.loadMode==='rooms'&&!Array.isArray(row.data.loadLinks))issues.push('Vínculo com ambientes incompleto');
  return issues;
 };
@@ -699,9 +741,11 @@ const circuitDemandCurrent=(row:SavedCircuit,factors:Record<DemandCategory,numbe
 const panelCurrent=(row:SavedCircuit)=>{const results=(row.data.results||{}) as Record<string,unknown>;const n=Number(results.current);return Number.isFinite(n)&&n>0?n:0};
 // v0.7.49: corrente de cada ligação calculada a partir da potência aparente e tensão efetiva.
 // Não substitui silenciosamente os resultados persistidos dos circuitos terminais.
-const feederCircuitElectrical=(row:SavedCircuit,settings:InstallationSettings)=>{
+const feederCircuitElectrical=(row:SavedCircuit,settings:InstallationSettings,rooms?:SavedEnvironment[])=>{
+ const linked=row.data.loadMode==='rooms'&&Array.isArray(row.data.loadLinks)&&rooms?linkedLoads(row.data.loadLinks as CircuitLoadLink[],rooms):null;
+ const linkedMissing=Boolean(linked?.missing.length)||Boolean(row.data.loadMode==='rooms'&&(!rooms||!Array.isArray(row.data.loadLinks)));
  const poles=panelPoles(row,settings);
- const va=demandCircuitVA(row,Number(settings.powerFactor));
+ const va=linkedMissing?NaN:linked?linked.va:demandCircuitVA(row,Number(settings.powerFactor));
  const vfn=settings.supply==='single'?Number(settings.voltage):(Number(settings.voltageFN)||Number(settings.voltage));
  const vff=Number(settings.voltageFF);
  const voltage=poles===1?vfn:vff;
@@ -719,7 +763,7 @@ const panelPoles=(row:SavedCircuit,settings:InstallationSettings)=>{
 // Atribui-se a cada circuito seu próprio fator de potência quando cadastrado.
 // Em falta de FP individual, utiliza-se o FP geral. Correntes harmônicas não são modeladas.
 type ComplexCurrent={re:number;im:number};
-const phaseVectors=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
+const phaseVectors=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number,rooms?:SavedEnvironment[])=>{
  const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
  const angles:Record<string,number>={A:0,B:-2*Math.PI/3,C:2*Math.PI/3};
  // Em sistema bifásico de duas fases da rede trifásica, A/B têm 120° entre si.
@@ -729,7 +773,7 @@ const phaseVectors=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:
   const choices=panelChoices(settings,panelPoles(row,settings));
   const stored=String(row.data.panelConnection||row.data.panelPhase||'');
   const connection=choices.includes(stored as PanelConnection)?stored:choices[0];
-  const current=feederCircuitElectrical(row,settings).current*factor(row);
+  const current=feederCircuitElectrical(row,settings,rooms).current*factor(row);
   const pfRaw=Number(row.data.pf||settings.powerFactor);
   const pf=Number.isFinite(pfRaw)&&pfRaw>0&&pfRaw<=1?pfRaw:1;
   const lag=Math.acos(pf);
@@ -744,26 +788,26 @@ const phaseVectors=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:
  }
  return vectors;
 };
-const phaseCurrents=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
- const vectors=phaseVectors(rows,settings,factor);
+const phaseCurrents=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number,rooms?:SavedEnvironment[])=>{
+ const vectors=phaseVectors(rows,settings,factor,rooms);
  return Object.fromEntries(Object.entries(vectors).map(([p,v])=>[p,Math.hypot(v.re,v.im)])) as Record<string,number>;
 };
 // Limite superior conservador: soma dos módulos das correntes em cada condutor.
 // Evita reduzir a seção do alimentador apenas por cancelamentos fasoriais presumidos.
-const phaseCurrentUpperBounds=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
+const phaseCurrentUpperBounds=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number,rooms?:SavedEnvironment[])=>{
  const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
  const totals:Record<string,number>=Object.fromEntries(phases.map(p=>[p,0]));
  for(const row of rows){
   const choices=panelChoices(settings,panelPoles(row,settings));
   const stored=String(row.data.panelConnection||row.data.panelPhase||'');
   const connection=choices.includes(stored as PanelConnection)?stored:choices[0];
-  const current=feederCircuitElectrical(row,settings).current*factor(row);
+  const current=feederCircuitElectrical(row,settings,rooms).current*factor(row);
   for(const p of connection){if(p in totals)totals[p]+=current;}
  }
  return totals;
 };
-const neutralCurrent=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number)=>{
- const vectors=phaseVectors(rows,settings,factor);
+const neutralCurrent=(rows:SavedCircuit[],settings:InstallationSettings,factor:(c:SavedCircuit)=>number,rooms?:SavedEnvironment[])=>{
+ const vectors=phaseVectors(rows,settings,factor,rooms);
  const sum=Object.values(vectors).reduce((v,c)=>({re:v.re+c.re,im:v.im+c.im}),{re:0,im:0});
  return Math.hypot(sum.re,sum.im);
 };
@@ -773,16 +817,23 @@ const panelChoices=(settings:InstallationSettings,poles:number):PanelConnection[
  return poles===3?['ABC']:poles===2?['AB','BC','CA']:['A','B','C'];
 };
 function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
- const [rows,setRows]=useState<SavedCircuit[]>([]),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
+ const [rows,setRows]=useState<SavedCircuit[]>([]),[rooms,setRooms]=useState<SavedEnvironment[]>([]),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
  const [projectId,setProjectId]=useState('');
  const [distributionVisible,setDistributionVisible]=useState(true);
  useEffect(()=>{setDistributionVisible(true)},[clientId]);
  const [groupFactors,setGroupFactors]=useState<Record<DemandGroup,number>>(defaultGroupFactors);
  const [demandMode,setDemandMode]=useState<'conservative'|'documented'|'external_table'>('conservative');
- useEffect(()=>{let live=true;void(async()=>{try{const id=await ensureEletriProject(clientId,userId);if(!supabase)return;const [r,pr]=await Promise.all([supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}),supabase.from('eletripro_projects').select('installation').eq('id',id).single()]);if(r.error)throw r.error;if(pr.error)throw pr.error;if(live){setRows((r.data||[]) as SavedCircuit[]);setProjectId(id);setGroupFactors(normalizeGroupFactors(pr.data?.installation?.demandGroupFactors));setDemandMode(pr.data?.installation?.demandMode==='external_table'?'external_table':pr.data?.installation?.demandMode==='documented'?'documented':'conservative')}}catch(e){if(live)setMessage('Erro ao carregar quadro: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
+ useEffect(()=>{let live=true;void(async()=>{try{const id=await ensureEletriProject(clientId,userId);if(!supabase)return;const [r,pr,er]=await Promise.all([supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}),supabase.from('eletripro_projects').select('installation').eq('id',id).single(),supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id)]);if(r.error)throw r.error;if(pr.error)throw pr.error;if(er.error)throw er.error;if(live){const freshRooms=(er.data||[]) as SavedEnvironment[];
+ setRooms(freshRooms);
+ setRows(((r.data||[]) as SavedCircuit[]).map(c=>{
+  const d=c.data;
+  if(d.loadMode!=='rooms'||!Array.isArray(d.loadLinks))return c;
+  const linked=linkedLoads(d.loadLinks as CircuitLoadLink[],freshRooms);
+  return {...c,data:{...d,powerVA:linked.missing.length?NaN:linked.va,power:linked.missing.length?NaN:linked.va*(Number(d.pf)||Number(settings.powerFactor))}};
+ }));setProjectId(id);setGroupFactors(normalizeGroupFactors(pr.data?.installation?.demandGroupFactors));setDemandMode(pr.data?.installation?.demandMode==='external_table'?'external_table':pr.data?.installation?.demandMode==='documented'?'documented':'conservative')}}catch(e){if(live)setMessage('Erro ao carregar quadro: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
  const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
  const optionsFor=(row:SavedCircuit)=>panelChoices(settings,panelPoles(row,settings));
- const circuitAmps=(row:SavedCircuit)=>{const n=feederCircuitElectrical(row,settings).current;return Number.isFinite(n)&&n>0?n:panelCurrent(row)};
+ const circuitAmps=(row:SavedCircuit)=>feederCircuitElectrical(row,settings,rooms).current;
  const connectionFor=(row:SavedCircuit):PanelConnection=>{
   const options=optionsFor(row);const saved=String(row.data.panelConnection||row.data.panelPhase||'A') as PanelConnection;
   return options.includes(saved)?saved:options[0];
@@ -802,9 +853,9 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  }
  const sums=Object.fromEntries(phases.map(p=>[p,rows.reduce((n,row)=>n+(connectionFor(row).includes(p)?circuitAmps(row):0),0)])) as Record<string,number>;
  const factorFor=(row:SavedCircuit)=>demandMode==='documented'?groupDemandFactor(row,groupFactors):1;
- const demandSums=phaseCurrents(rows,settings,factorFor);
+ const demandSums=phaseCurrents(rows,settings,factorFor,rooms);
  const incompleteForDistribution=rows.filter(row=>{
-  const e=feederCircuitElectrical(row,settings);
+  const e=feederCircuitElectrical(row,settings,rooms);
   return !Number.isFinite(e.va)||e.va<=0||!Number.isFinite(circuitAmps(row))||circuitAmps(row)<=0||panelPoles(row,settings)>(settings.supply==='three'?3:settings.supply==='two'?2:1);
  });
  const calculateBalance=()=>{
@@ -835,7 +886,7 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
   const changes=calculateBalance();
   if(changes.length)void persistChanges(changes);
  },[loading,projectId,settings.supply,rows.length]);
- const numberBR=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:1});
+ const numberBR=(n:number)=>Number.isFinite(n)?n.toLocaleString('pt-BR',{maximumFractionDigits:1}):'—';
  const maximumDemandCurrent=Math.max(0,...phases.map(phase=>Number(demandSums[phase])||0));
  // Circuitos criados automaticamente ainda não possuem corrente, seção ou proteção calculadas.
  // Não permitir que esses registros sejam interpretados como carga nula ao pré-selecionar o DG.
@@ -846,7 +897,7 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  return <section className="panel"><div className="panel-heading"><h2>Quadro de distribuição</h2>{<button type="button" className="outline" disabled={busy||loading||!rows.length||incompleteForDistribution.length>0} onClick={balance}>Reequilibrar fases</button>}</div>
  {incompleteForDistribution.length>0&&<p role="alert" className="sizing-warning">Distribuição automática pendente: confira a potência, a tensão ou a compatibilidade de fases dos circuitos: {incompleteForDistribution.map(c=>c.title).join(', ')}.</p>}
  <p className="hint">As fases são distribuídas automaticamente conforme a modalidade sugerida e as correntes calculadas pelas cargas. Confira a tensão real dos equipamentos antes da execução.</p>
- {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:!distributionVisible?<p className="hint">Os circuitos cadastrados serão apresentados automaticamente.</p>:<div className="ep-distribution-list">{[...rows].sort((a,b)=>(Number(b.data.results?.breaker)||0)-(Number(a.data.results?.breaker)||0)||(Number(b.data.power)||0)-(Number(a.data.power)||0)).map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;const poles=panelPoles(row,settings);const choices=optionsFor(row);return <div className="ep-distribution-item ep-panel-circuit" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div className="ep-panel-circuit-info"><strong>{row.title}</strong><small>Fase(s): {connectionFor(row)} · Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · {poles} {poles===1?'polo':'polos'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {circuitAmps(row)?`${numberBR(circuitAmps(row))} A`:'—'}</small></div><label>Fase(s)<select value={connectionFor(row)} disabled={busy||choices.length===1} onChange={e=>void persistChanges([{id:row.id,connection:e.target.value as PanelConnection}])}>{choices.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
+ {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:!distributionVisible?<p className="hint">Os circuitos cadastrados serão apresentados automaticamente.</p>:<div className="ep-distribution-list">{[...rows].sort((a,b)=>(Number(liveCircuitSizing(b,settings,rooms)?.breaker)||0)-(Number(liveCircuitSizing(a,settings,rooms)?.breaker)||0)||(Number(b.data.powerVA||b.data.power)||0)-(Number(a.data.powerVA||a.data.power)||0)).map((row,i)=>{const live=liveCircuitSizing(row,settings,rooms);const result={breaker:live?.breaker,selectedSection:live?.selectedSection};const poles=panelPoles(row,settings);const choices=optionsFor(row);return <div className="ep-distribution-item ep-panel-circuit" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div className="ep-panel-circuit-info"><strong>{row.title}</strong><small>Fase(s): {connectionFor(row)} · Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · {poles} {poles===1?'polo':'polos'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {circuitAmps(row)?`${numberBR(circuitAmps(row))} A`:'—'}</small></div><label>Fase(s)<select value={connectionFor(row)} disabled={busy||choices.length===1} onChange={e=>void persistChanges([{id:row.id,connection:e.target.value as PanelConnection}])}>{choices.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
  {distributionVisible&&<><h3 className="ep-panel-subtitle">Resumo por fase</h3><div className="ep-summary-grid">{phases.map(p=><div key={p}><span>Corrente instalada — fase {p}</span><strong>{numberBR(sums[p])} A</strong><small>Corrente demandada: {numberBR(demandSums[p])} A</small></div>)}</div>
  <div className="ep-general-breaker"><strong>Disjuntor geral — pré-seleção por demanda</strong><p>{incompleteCircuits.length>0?'Pré-seleção bloqueada: existem circuitos sem dimensionamento validado':generalBreakerCandidate?`${generalBreakerCandidate} A`:'Demanda acima da faixa de pré-seleção'} · Corrente de demanda máxima por fase: {numberBR(maximumDemandCurrent)} A</p>{incompleteCircuits.length>0&&<p role="status" className="hint">Dimensione os circuitos pendentes antes de avaliar o disjuntor geral: {incompleteCircuits.map(c=>c.title).join(', ')}. A corrente mostrada acima é parcial e não representa a demanda total.</p>}<small>Valor preliminar. A escolha definitiva depende da capacidade de condução do alimentador, curto-circuito, método de instalação, coordenação e exigências da concessionária.</small></div>
  <p className="hint">Corrente demandada considera os fatores técnicos registrados no projeto. Sem justificativa de redução, todos os fatores permanecem em 100%. Circuitos bipolares contribuem com correntes de retorno opostas e circuitos tripolares são considerados equilibrados. A soma fasorial considera o FP cadastrado. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p></>}{message&&<p role="status">{message}</p>}</section>;
@@ -878,14 +929,33 @@ function celescEntryClassification(installedKW:number,voltageFN:number,voltageFF
  return {category,supply,breakerIEC,entryPVC:null,entryXLPE:null,range,notes:'Indicação por carga instalada. Conferir equipamentos bifásicos/trifásicos, demanda quando exigida, ramais e condições de rede.'};
 }
 type AutomaticSupplyResult={entry:CelescEntry|null;installedKW:number;supply:string|null;tripolar:boolean;requiresTechnicalReview:boolean;reason:string};
-function celescAutomaticSupply(circuits:SavedCircuit[],settings:InstallationSettings):AutomaticSupplyResult{
- const kw=circuits.reduce((total,c)=>{
-  const d=c.data||{};
-  const watts=Number(d.power), apparent=Number(d.powerVA);
-  const pf=Number(d.pf)||Number(settings.powerFactor)||1;
-  const activePower=Number.isFinite(watts)&&watts>0?watts:Number.isFinite(apparent)&&apparent>0?apparent*pf:0;
-  return total+activePower;
- },0)/1000;
+// CELESC: carga instalada é potência ATIVA (kW), não potência aparente (kVA).
+// Iluminação/TUG dos ambientes são estimativas em VA; converter com FP explícito.
+// TUE dos ambientes tem potência cadastrada em W, sem aplicar FP duas vezes.
+// Nunca usar a carga antiga do circuito quando ele está vinculado a ambientes.
+function circuitInstalledWatts(row:SavedCircuit,settings:InstallationSettings,rooms?:SavedEnvironment[]):number{
+ const d=row.data||{};
+ const pf=Number(d.pf??settings.powerFactor);
+ if(!(pf>0&&pf<=1))return NaN;
+ if(d.loadMode==='rooms'){
+  if(!rooms||!Array.isArray(d.loadLinks))return NaN;
+  let watts=0;
+  for(const link of d.loadLinks as CircuitLoadLink[]){
+   const room=rooms.find(r=>r.id===link.environmentId);
+   if(!room)return NaN;
+   const value=roomLoadPower(room,link);
+   if(value==null||!Number.isFinite(Number(value))||Number(value)<0)return NaN;
+   watts+=Number(value)*(link.kind==='tue'?1:pf);
+  }
+  return watts>0?watts:NaN;
+ }
+ const watts=Number(d.power),va=Number(d.powerVA);
+ if(Number.isFinite(watts)&&watts>0)return watts;
+ return Number.isFinite(va)&&va>0?va*pf:NaN;
+}
+function celescAutomaticSupply(circuits:SavedCircuit[],settings:InstallationSettings,rooms?:SavedEnvironment[]):AutomaticSupplyResult{
+ const powers=circuits.map(c=>circuitInstalledWatts(c,settings,rooms));
+ const kw=circuits.length&&powers.every(w=>Number.isFinite(w)&&w>0)?powers.reduce((a,b)=>a+b,0)/1000:NaN;
  const entry=celescEntryClassification(kw,Number(settings.voltageFN)||220,Number(settings.voltageFF)||380);
  const tripolar=circuits.some(c=>Number(c.data.panelPoles||c.data.poles||c.data.results?.poles)===3);
  // Um circuito tripolar exige três fases; a categoria por carga instalada não é alterada artificialmente.
@@ -895,8 +965,16 @@ function celescAutomaticSupply(circuits:SavedCircuit[],settings:InstallationSett
   reason:requiresTechnicalReview?'Circuito tripolar requer fornecimento trifásico, mas a faixa de carga instalada indica '+entry?.category+'. Confirmar enquadramento e aprovação com a CELESC.':''};
 }
 
+// Uma revisão de dados impede tratar o cálculo do alimentador como atual após alterações.
+function feederSourceRevision(circuits:SavedCircuit[],rooms:SavedEnvironment[],settings:InstallationSettings):string{
+ const orderedCircuits=[...circuits].sort((a,b)=>a.id.localeCompare(b.id)).map(c=>[c.id,c.title,c.data]);
+ const orderedRooms=[...rooms].sort((a,b)=>a.id.localeCompare(b.id)).map(r=>[r.id,r.title,r.data]);
+ const {supply,voltage,voltageFN,voltageFF,powerFactor,method,temperature,groupMode,groupCount,conductorMaterial,conductorInsulation}=settings;
+ return JSON.stringify({orderedCircuits,orderedRooms,supply,voltage,voltageFN,voltageFF,powerFactor,method,temperature,groupMode,groupCount,conductorMaterial,conductorInsulation});
+}
 function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;settings:InstallationSettings}){
  const [circuits,setCircuits]=useState<SavedCircuit[]>([]);
+ const [feederRooms,setFeederRooms]=useState<SavedEnvironment[]>([]);
  const [length,setLength]=useState('15');
  const [projectId,setProjectId]=useState('');
  const [loading,setLoading]=useState(true),[saving,setSaving]=useState(false),[message,setMessage]=useState('');
@@ -914,26 +992,26 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const [applianceEntries,setApplianceEntries]=useState<Record<string,ApplianceEntry>>({});
  useEffect(()=>{let live=true;void(async()=>{try{
   const id=await ensureEletriProject(clientId,userId);
-  const [pr,cr]=await Promise.all([supabase.from('eletripro_projects').select('installation').eq('id',id).single(),supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id)]);
-  if(pr.error)throw pr.error;if(cr.error)throw cr.error;
-  if(live){setProjectId(id);setCircuits((cr.data||[]) as SavedCircuit[]);const previous=pr.data?.installation?.feeder;if(previous?.length)setLength(String(previous.length));setGroupFactors(normalizeGroupFactors(pr.data?.installation?.demandGroupFactors));setDemandMode(pr.data?.installation?.demandMode==='external_table'?'external_table':pr.data?.installation?.demandMode==='documented'?'documented':'conservative');setDemandJustification(String(pr.data?.installation?.demandJustification||''));setApplyDocumentedDemand(pr.data?.installation?.applyDocumentedDemand===true);setApplianceEntries(normalizeApplianceEntries(pr.data?.installation?.demandAppliances));const validation=previous?.technicalValidation;setTotalTerminalDrop(validation?.terminalDropPercent!=null?String(validation.terminalDropPercent):'');setTechnicalReference(String(validation?.reference||''));/* Confirmações não são reaproveitadas automaticamente: cada nova sessão exige revisão. */}
+  const [pr,cr,er]=await Promise.all([supabase.from('eletripro_projects').select('installation').eq('id',id).single(),supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id),supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id)]);
+  if(pr.error)throw pr.error;if(cr.error)throw cr.error;if(er.error)throw er.error;
+  if(live){setProjectId(id);setCircuits((cr.data||[]) as SavedCircuit[]);setFeederRooms((er.data||[]) as SavedEnvironment[]);const previous=pr.data?.installation?.feeder;if(previous?.length)setLength(String(previous.length));setGroupFactors(normalizeGroupFactors(pr.data?.installation?.demandGroupFactors));setDemandMode(pr.data?.installation?.demandMode==='external_table'?'external_table':pr.data?.installation?.demandMode==='documented'?'documented':'conservative');setDemandJustification(String(pr.data?.installation?.demandJustification||''));setApplyDocumentedDemand(pr.data?.installation?.applyDocumentedDemand===true);setApplianceEntries(normalizeApplianceEntries(pr.data?.installation?.demandAppliances));const validation=previous?.technicalValidation;setTotalTerminalDrop(validation?.terminalDropPercent!=null?String(validation.terminalDropPercent):'');setTechnicalReference(String(validation?.reference||''));/* Confirmações não são reaproveitadas automaticamente: cada nova sessão exige revisão. */}
  }catch(e){if(live)setMessage('Falha ao carregar alimentador: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
  const len=Number(length),voltage=Number(settings.voltage),pf=Number(settings.powerFactor);
  const voltageFN=Number(settings.voltageFN),voltageFF=Number(settings.voltageFF);
  const voltageConfirmed=settings.supply==='single'||(voltageFN>0&&voltageFF>0&&voltageFF>voltageFN);
- const sumPower=circuits.reduce((a,c)=>a+(Number(c.data.power)||0),0);
- const sumVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf),0);
+ const sumPower=circuits.reduce((a,c)=>a+circuitInstalledWatts(c,settings,feederRooms),0);
+ const sumVA=circuits.reduce((a,c)=>a+feederCircuitElectrical(c,settings,feederRooms).va,0);
  // A tabela CELESC usa carga instalada C em kW. Não usar a demanda reduzida do QD.
  // Potência do circuito é tratada pelo cadastro como W; verificar dados de placa/fator de potência.
- const installedKW=circuits.reduce((total,c)=>total+(Number(c.data.power)||0),0)/1000;
- const automaticEntry=celescAutomaticSupply(circuits,settings);
+ const automaticEntry=celescAutomaticSupply(circuits,settings,feederRooms);
+ const installedKW=automaticEntry.installedKW;
  const celescEntry=automaticEntry.entry;
 
  const autoResidential=automaticResidentialFactors(circuits,applianceEntries);
  const selectedFactors=demandMode==='external_table'?autoResidential.factors:groupFactors;
  const effectiveFactor=(c:SavedCircuit)=>demandMode==='conservative'?1:demandMode==='external_table'?autoResidential.factorForCircuit(c):groupDemandFactor(c,selectedFactors);
- const demandedVA=circuits.reduce((a,c)=>a+demandCircuitVA(c,pf)*effectiveFactor(c),0);
- const demandAudit=circuits.map(c=>({c,category:demandCategory(c),group:demandGroup(c),va:demandCircuitVA(c,pf),issues:demandCircuitIssues(c,pf)}));
+ const demandedVA=circuits.reduce((a,c)=>a+feederCircuitElectrical(c,settings,feederRooms).va*effectiveFactor(c),0);
+ const demandAudit=circuits.map(c=>({c,category:demandCategory(c),group:demandGroup(c),va:feederCircuitElectrical(c,settings,feederRooms).va,issues:demandCircuitIssues(c,pf,feederRooms)}));
  const groupTotals=demandGroupOrder.map(group=>({group,items:demandAudit.filter(x=>x.group===group)})).filter(x=>x.items.length>0);
  const demandTotals=Object.fromEntries(demandCategories.map(k=>[k,demandAudit.filter(x=>x.category===k).reduce((a,x)=>a+x.va,0)])) as Record<DemandCategory,number>;
  const auditIssues=demandAudit.flatMap(x=>x.issues.map(issue=>`${x.c.title}: ${issue}`));
@@ -947,13 +1025,13 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  const loaded=settings.supply==='single'?'2':'3';
  const harmonicNeutralFactor=settings.supply==='three'?0.86:1;
  const loadedDescription=settings.supply==='three'?'4 (hipótese conservadora; tabela 3 × 0,86)':loaded;
- const phaseDemand=phaseCurrents(circuits,settings,effectiveFactor);
- const phaseUpperBounds=phaseCurrentUpperBounds(circuits,settings,effectiveFactor);
+ const phaseDemand=phaseCurrents(circuits,settings,effectiveFactor,feederRooms);
+ const phaseUpperBounds=phaseCurrentUpperBounds(circuits,settings,effectiveFactor,feederRooms);
  // A demanda só passa ao pré-dimensionamento após confirmação expressa da referência técnica.
  // A aplicabilidade normativa permanece sob responsabilidade do projetista.
- const phaseSizingBounds=phaseCurrentUpperBounds(circuits,settings,demandApplied?effectiveFactor:()=>1);
+ const phaseSizingBounds=phaseCurrentUpperBounds(circuits,settings,demandApplied?effectiveFactor:()=>1,feederRooms);
  const ib=Math.max(0,...Object.values(phaseSizingBounds));
- const neutralFundamental=neutralCurrent(circuits,settings,demandApplied?effectiveFactor:()=>1);
+ const neutralFundamental=neutralCurrent(circuits,settings,demandApplied?effectiveFactor:()=>1,feederRooms);
  // Critério preliminar conservador para a seção do neutro; não é a corrente fasorial prevista.
  const neutralIb=Math.max(neutralFundamental,...Object.values(phaseSizingBounds));
  const feederTopology=settings.supply==='three'?'L1 + L2 + L3 + N + PE':settings.supply==='two'?'L1 + L2 + N + PE':'L1 + N + PE';
@@ -966,19 +1044,19 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  if(celescEntry&&settings.supply!==automaticEntry.supply)errors.push('Fornecimento diverge da proposta automática: revise as cargas e o quadro.');
  if(!voltageConfirmed)errors.push('Informe VFN e VFF válidas no Tipo de instalação para validar o alimentador multifásico.');
  if(settings.supply!=='single'&&voltageConfirmed&&Math.abs(voltageFF/voltageFN-Math.sqrt(3))>0.08)errors.push('Relação VFF/VFN incompatível com o modelo de fases defasadas de 120°. Revise o fornecimento.');
- if(circuits.some(c=>!(feederCircuitElectrical(c,settings).current>0)))errors.push('Existem circuitos sem corrente de projeto válida; revise o dimensionamento dos circuitos.');
+ if(circuits.some(c=>!(feederCircuitElectrical(c,settings,feederRooms).current>0)))errors.push('Existem circuitos sem corrente de projeto válida; revise o dimensionamento dos circuitos.');
  // Circuitos terminais não são recalculados/salvos automaticamente: divergência bloqueia a aprovação do alimentador.
  for(const c of circuits){
-  const e=feederCircuitElectrical(c,settings);
+  const e=feederCircuitElectrical(c,settings,feederRooms);
   if(!(e.voltage>0&&Number.isFinite(e.current)&&e.current>0))errors.push(`${c.title}: tensão ou potência incompatível com a ligação elétrica; confirme VFN/VFF.`);
-  else if(e.relativeDifference>0.05)errors.push(`${c.title}: corrente terminal salva (${feederFormat(e.saved)} A) diverge da corrente calculada em ${feederFormat(e.voltage)} V (${feederFormat(e.current)} A). Redimensione o circuito antes de salvar o alimentador.`);
+  else if(!liveCircuitSizing(c,settings,feederRooms))errors.push(`${c.title}: não foi possível determinar cabo e disjuntor com a ligação e os parâmetros atuais.`);
  }
  const reducedDemand=demandMode!=='conservative'&&circuits.some(c=>effectiveFactor(c)<1);
  if(demandMode==='documented'&&demandGroupOrder.some(k=>!Number.isFinite(groupFactors[k])||!(groupFactors[k]>0&&groupFactors[k]<=1)))errors.push('Os fatores por grupo devem estar entre 0 e 1.');
  if(reducedDemand&&demandMode==='documented'&&demandJustification.trim().length<12)errors.push('Informe a referência técnica dos fatores de demanda reduzidos na memória de cálculo.');
  if(!circuits.length)errors.push('Cadastre os circuitos terminais antes de dimensionar o alimentador.');
  if(auditIssues.length)errors.push('Existem pendências na auditoria de cargas. Consulte a memória de cálculo.');
- if(circuits.some(c=>!(demandCircuitVA(c,Number(settings.powerFactor))>0)))errors.push('Há circuitos sem potência aparente válida (VA) ou potência ativa conversível (W).');
+ if(circuits.some(c=>!(feederCircuitElectrical(c,settings,feederRooms).va>0)))errors.push('Há circuitos sem potência aparente válida (VA) ou potência ativa conversível (W).');
  if(!(voltage>0&&pf>0&&pf<=1))errors.push('Revise tensão e fator de potência em Tipo de instalação.');
  if(!(len>0&&Number.isFinite(len)))errors.push('Informe uma distância positiva em metros.');
  if(!table||ft===undefined||fg===undefined)errors.push('Revise método de instalação, temperatura e agrupamento em Tipo de instalação.');
@@ -993,11 +1071,11 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
   const stored=String(c.data.panelConnection||c.data.panelPhase||'');
   if(!stored)errors.push(`${c.title}: ligação de fase não confirmada no quadro de distribuição; atribua a ligação antes de dimensionar o alimentador.`);
   if(stored&&!choices.includes(stored as PanelConnection))errors.push(`${c.title}: ligação ${stored} incompatível com o fornecimento; revise o quadro de distribuição.`);
-  const result=(c.data.results||{}) as Record<string,unknown>;
-  const circuitBreaker=Number(result.breaker);
+  const result=liveCircuitSizing(c,settings,feederRooms);
+  const circuitBreaker=Number(result?.breaker);
   if(!Number.isFinite(circuitBreaker)||circuitBreaker<=0)errors.push(`${c.title}: disjuntor terminal não dimensionado.`);
-  else if(feederCircuitElectrical(c,settings).current>circuitBreaker+1e-6)errors.push(`${c.title}: corrente de projeto recalculada supera o disjuntor terminal.`);
-  const circuitSection=Number(result.selectedSection);
+  else if(feederCircuitElectrical(c,settings,feederRooms).current>circuitBreaker+1e-6)errors.push(`${c.title}: corrente de projeto recalculada supera o disjuntor terminal.`);
+  const circuitSection=Number(result?.selectedSection);
   if(!Number.isFinite(circuitSection)||circuitSection<=0)errors.push(`${c.title}: seção do circuito terminal não dimensionada.`);
  }
  if(demandApplied&&demandMode==='documented'&&circuits.some(c=>effectiveFactor(c)<1&&['other_tue','other'].includes(demandGroup(c))))errors.push('Redução em Outras TUE/Outras cargas exige classificação explícita do equipamento e critério individual; não é seguro aplicar fator genérico por título.');
@@ -1028,7 +1106,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  // Em sistemas desequilibrados, adota-se a maior corrente fasorial por fase para a ampacidade.
  // A queda estimada é resistiva e simplificada; reatância e impedância do neutro exigem revisão.
  const chosen=errors.length?undefined:candidates.find(x=>x.iz>=ib&&x.iz>=neutralIb&&x.dropPercent<=feederDropBudget&&x.breaker);
- const terminalBreakers=circuits.map(c=>({id:c.id,title:c.title,breaker:Number(c.data.results?.breaker)})).filter(c=>Number.isFinite(c.breaker)&&c.breaker>0);
+ const terminalBreakers=circuits.map(c=>({id:c.id,title:c.title,breaker:Number(liveCircuitSizing(c,settings,feederRooms)?.breaker)})).filter(c=>Number.isFinite(c.breaker)&&c.breaker>0);
  const largestTerminalBreaker=terminalBreakers.length?Math.max(...terminalBreakers.map(c=>c.breaker)):null;
  const coordinationStatus=!chosen?'pendente':terminalBreakers.length!==circuits.length?'incompleto':largestTerminalBreaker!==null&&chosen.breaker===largestTerminalBreaker?'nominais iguais':largestTerminalBreaker!==null&&chosen.breaker<largestTerminalBreaker?'geral nominalmente menor':'sem seletividade demonstrada';
  const terminalDropValue=totalTerminalDrop.trim()===''?NaN:Number(totalTerminalDrop);
@@ -1062,7 +1140,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
   try{
    const pr=await supabase.from('eletripro_projects').select('installation').eq('id',projectId).eq('owner_id',userId).single();
    if(pr.error)throw pr.error;
-   const installation={...(pr.data?.installation||{}),demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,demandGroupFactors:selectedFactors,demandMode,demandAppliances:applianceEntries,applyDocumentedDemand:demandApplied,feeder:{length,demandFactor:String(appliedDemandFactor),voltage:String(voltage),powerFactor:String(pf),maxDrop:String(feederDropBudget),groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:(demandMode==='external_table'?externalResidentialReference:demandJustification)||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',technicalValidation:{status:technicalValidated?'verificacoes_declaradas':'pendente',terminalDropPercent:Number.isFinite(terminalDropValue)?terminalDropValue:null,totalDropPercent:Number.isFinite(totalDrop)?totalDrop:null,shortCircuitChecked,protectionChecked,neutralChecked,upstreamChecked,reference:technicalReference.trim(),issues:validationIssues,validatedAt:technicalValidated?new Date().toISOString():null,automaticallyVerified:false},calculation:{coordinationAudit,installationAssumption:{method,description:method==='B1'?'Condutores isolados em eletroduto embutido em alvenaria (premissa residencial)':'Método informado em configurações avançadas; verificar instalação física',confirmedBySystem:false},celescEntry:celescEntry?{...celescEntry,installedKW,source:celescEntryReference}:null,power:sumPower,demand:appliedDemandFactor,demandedVA:appliedDemandedVA,proposedDemandFactor:demand,proposedDemandVA:demandedVA,phaseDemand,phaseUpperBounds,phaseSizingBounds,demandApplied,demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,groupFactors:selectedFactors,automaticResidentialCircuitFactors:demandMode==='external_table'?circuits.map(c=>({id:c.id,title:c.title,category:autoResidential.kindFor(c),quantity:applianceEntries[c.id]?.quantity||0,factor:autoResidential.factorForCircuit(c)})):null,automaticResidentialAudit:demandMode==='external_table'?{installedKW:autoResidential.installedKW,heatingCount:autoResidential.heatingCount,stoveCount:autoResidential.stoveCount,ovenCount:autoResidential.ovenCount,airCount:autoResidential.airCount,stoveFactor:autoResidential.stove,ovenFactor:autoResidential.oven,source:externalResidentialReference,method:'fator específico por circuito, não fator único de TUE'}:null,neutralIb,neutralFundamental,feederTopology,supply:settings.supply,voltageFN,voltageFF,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded:loadedDescription,harmonicNeutralFactor,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
+   const installation={...(pr.data?.installation||{}),demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,demandGroupFactors:selectedFactors,demandMode,demandAppliances:applianceEntries,applyDocumentedDemand:demandApplied,feeder:{length,demandFactor:String(appliedDemandFactor),voltage:String(voltage),powerFactor:String(pf),maxDrop:String(feederDropBudget),groupCount:settings.groupCount,breaker:String(chosen.breaker),neutralSection:String(neutral),notes:(demandMode==='external_table'?externalResidentialReference:demandJustification)||'Demanda conservadora de 100%; verificar concessionária e demais critérios.',technicalValidation:{status:technicalValidated?'verificacoes_declaradas':'pendente',terminalDropPercent:Number.isFinite(terminalDropValue)?terminalDropValue:null,totalDropPercent:Number.isFinite(totalDrop)?totalDrop:null,shortCircuitChecked,protectionChecked,neutralChecked,upstreamChecked,reference:technicalReference.trim(),issues:validationIssues,validatedAt:technicalValidated?new Date().toISOString():null,automaticallyVerified:false},calculation:{sourceRevision:feederSourceRevision(circuits,feederRooms,settings),coordinationAudit,installationAssumption:{method,description:method==='B1'?'Condutores isolados em eletroduto embutido em alvenaria (premissa residencial)':'Método informado em configurações avançadas; verificar instalação física',confirmedBySystem:false},celescEntry:celescEntry?{...celescEntry,installedKW,source:celescEntryReference}:null,power:sumPower,demand:appliedDemandFactor,demandedVA:appliedDemandedVA,proposedDemandFactor:demand,proposedDemandVA:demandedVA,phaseDemand,phaseUpperBounds,phaseSizingBounds,demandApplied,demandJustification:demandMode==='external_table'?externalResidentialReference:demandJustification,groupFactors:selectedFactors,automaticResidentialCircuitFactors:demandMode==='external_table'?circuits.map(c=>({id:c.id,title:c.title,category:autoResidential.kindFor(c),quantity:applianceEntries[c.id]?.quantity||0,factor:autoResidential.factorForCircuit(c)})):null,automaticResidentialAudit:demandMode==='external_table'?{installedKW:autoResidential.installedKW,heatingCount:autoResidential.heatingCount,stoveCount:autoResidential.stoveCount,ovenCount:autoResidential.ovenCount,airCount:autoResidential.airCount,stoveFactor:autoResidential.stove,ovenFactor:autoResidential.oven,source:externalResidentialReference,method:'fator específico por circuito, não fator único de TUE'}:null,neutralIb,neutralFundamental,feederTopology,supply:settings.supply,voltageFN,voltageFF,ib,section:chosen.size,iz:chosen.iz,dropPercent:chosen.dropPercent,pe,neutral,breaker:chosen.breaker,loaded:loadedDescription,harmonicNeutralFactor,method,material,insulation,temperature:settings.temperature,groupMode:settings.groupMode,groupCount:Number(settings.groupCount),updatedAt:new Date().toISOString()}}};
    const res=await supabase.from('eletripro_projects').update({installation,updated_at:new Date().toISOString()}).eq('id',projectId).eq('owner_id',userId);
    if(res.error)throw res.error;setMessage(technicalValidated?'✓ Dimensionamento salvo com verificações técnicas declaradas. A aprovação executiva permanece sob responsabilidade do profissional habilitado.':'✓ Pré-dimensionamento salvo com pendências técnicas identificadas. Não liberado para execução.');
   }catch(e){setMessage('Erro ao salvar: '+String(e))}finally{setSaving(false)}
@@ -1104,7 +1182,7 @@ function FeederPanel({clientId,userId,settings}:{clientId:string;userId:string;s
  <p className="hint" role="status"><strong>Critério efetivamente aplicado:</strong> {demandApplied?'Fatores documentados confirmados':'100% da potência instalada (fatores propostos ainda não aplicados)'}. Potência usada no dimensionamento: {fmt(appliedDemandedVA)} VA. Potência com fatores propostos: {fmt(demandedVA)} VA.</p><h4>Equipamentos identificados automaticamente</h4><div style={{overflowX:'auto'}}><table><thead><tr><th>Grupo de carga</th><th>Circuitos</th><th>Potência (VA)</th><th>Demanda considerada (VA)</th></tr></thead><tbody>{groupTotals.map(({group,items})=><tr key={group}><td>{demandGroupLabels[group]}</td><td>{items.length}</td><td>{fmt(items.reduce((a,x)=>a+x.va,0))}</td><td>{fmt(items.reduce((a,x)=>a+x.va*effectiveFactor(x.c),0))}</td></tr>)}</tbody></table></div><p className="hint">A coluna demanda desta auditoria é uma simulação proposta; não é aplicada até a confirmação técnica. Cargas classificadas como Outras TUE/Outras cargas não podem receber redução genérica sem identificação específica. A identificação dos equipamentos usa o nome e o tipo dos circuitos. Confira as classificações abaixo; títulos genéricos podem exigir revisão. Os fatores por grupo são informativos por padrão; podem entrar no pré-dimensionamento somente com confirmação expressa e referência técnica documentada.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Categoria</th><th>Equipamento identificado</th><th>Potência (VA)</th><th>Fator</th><th>Demanda (VA)</th><th>Origem</th></tr></thead><tbody>{demandAudit.map(({c,category,group,va})=><tr key={c.id}><td>{c.title}</td><td>{demandLabels[category]}</td><td>{demandGroupLabels[group]}</td><td>{fmt(va)}</td><td>{fmt(effectiveFactor(c))}</td><td>{fmt(va*effectiveFactor(c))}</td><td>{demandCircuitSource(c)}</td></tr>)}</tbody></table></div>
  {auditIssues.length>0?<div><strong>Pendências de cadastro</strong>{auditIssues.map((issue,i)=><p className="hint" key={i}>{issue}</p>)}</div>:<p className="hint">Todos os circuitos possuem categoria reconhecida e potência aparente disponível.</p>}
  </div>}
- {details&&<div className="panel"><h3>Auditoria de tensão e corrente por circuito</h3><p className="hint">Comparação informativa entre a corrente terminal salva e a corrente derivada da potência aparente e da tensão da ligação. Divergências superiores a 5% bloqueiam o salvamento; o circuito terminal precisa ser redimensionado individualmente.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Ligação</th><th>Tensão (V)</th><th>VA</th><th>Ib salvo (A)</th><th>Ib por ligação (A)</th><th>Estado</th></tr></thead><tbody>{circuits.map(c=>{const e=feederCircuitElectrical(c,settings);return <tr key={c.id}><td>{c.title}</td><td>{String(c.data.panelConnection||c.data.panelPhase||'não atribuída')}</td><td>{fmt(e.voltage)}</td><td>{fmt(e.va)}</td><td>{fmt(e.saved)}</td><td>{fmt(e.current)}</td><td>{e.relativeDifference<=0.05?'Conferido':'Revisar circuito'}</td></tr>})}</tbody></table></div></div>}
+ {details&&<div className="panel"><h3>Auditoria de tensão e corrente por circuito</h3><p className="hint">Comparação informativa entre a corrente terminal salva e a corrente derivada da potência aparente e da tensão da ligação. Divergências superiores a 5% bloqueiam o salvamento; o circuito terminal precisa ser redimensionado individualmente.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito</th><th>Ligação</th><th>Tensão (V)</th><th>VA</th><th>Ib dimensionado (A)</th><th>Ib por ligação (A)</th><th>Estado</th></tr></thead><tbody>{circuits.map(c=>{const e=feederCircuitElectrical(c,settings,feederRooms);return <tr key={c.id}><td>{c.title}</td><td>{String(c.data.panelConnection||c.data.panelPhase||'não atribuída')}</td><td>{fmt(e.voltage)}</td><td>{fmt(e.va)}</td><td>{fmt(liveCircuitSizing(c,settings,feederRooms)?.current||NaN)}</td><td>{fmt(e.current)}</td><td>{liveCircuitSizing(c,settings,feederRooms)&&Math.abs(liveCircuitSizing(c,settings,feederRooms)!.current-e.current)<=0.05*e.current?'Conferido':'Revisar circuito'}</td></tr>})}</tbody></table></div></div>}
  {details&&<div className="panel"><h3>Critérios de demanda por grupo</h3><p className="hint">Sem uma tabela de demanda aplicável e documentada, o modo conservador considera 100% das cargas. A EletriPro não inventa fatores normativos.</p><p className="hint"><strong>Referência conferida:</strong> CELESC N-321.0001, dezembro/2025, estabelece critérios de fornecimento e dimensionamento do padrão de entrada, mas não apresenta tabela geral de fatores de demanda residenciais para iluminação, TUG e TUE. Portanto, citar somente essa norma não habilita redução automática do alimentador interno. A Tabela 04 trata especificamente de motores e não deve ser aplicada a chuveiros, tomadas ou iluminação.</p>
  <label>Metodologia<select value={demandMode} onChange={e=>{setDemandMode(e.target.value as 'conservative'|'documented'|'external_table');setApplyDocumentedDemand(false)}}><option value="conservative">Conservadora — 100% das cargas</option><option value="documented">Fatores por grupo — critérios documentados pelo responsável técnico</option><option value="external_table">Cálculo automático demonstrativo — tabelas externas CEDRAP (exige validação)</option></select></label>
  {demandMode==='external_table'&&<div className="panel"><h4>Cadastro estruturado de equipamentos</h4><p className="hint">Classifique cada TUE e informe quantos aparelhos efetivamente estão ligados ao circuito. A classificação sugerida pelo título é apenas uma indicação, não altera o cálculo até você selecioná-la. Quantidade é usada na tabela de simultaneidade; a potência do circuito continua sendo a soma registrada, sem multiplicação adicional. Selecione "Outro" quando a tabela não se aplicar.</p><div style={{overflowX:'auto'}}><table><thead><tr><th>Circuito TUE</th><th>Sugestão pelo nome</th><th>Classificação confirmada</th><th>Quantidade de aparelhos</th><th>Fator calculado</th></tr></thead><tbody>{circuits.filter(c=>demandCategory(c)==='tue').map(c=><tr key={c.id}><td>{c.title}</td><td>{applianceKindLabels[automaticApplianceClass(c)==='unclassified'?'unclassified':automaticApplianceClass(c)==='residential_ac'?'residential_ac':automaticApplianceClass(c)==='stove'?'stove':'oven']}</td><td><select aria-label={'Equipamento de '+c.title} value={applianceEntries[c.id]?.kind||'unclassified'} onChange={e=>{const kind=e.target.value as ApplianceKind;setApplianceEntries(old=>({...old,[c.id]:{kind,quantity:old[c.id]?.quantity||1}}));setApplyDocumentedDemand(false)}}>{applianceKinds.map(k=><option key={k} value={k}>{applianceKindLabels[k]}</option>)}</select></td><td><input aria-label={'Quantidade de '+c.title} type="number" min="1" max="100" step="1" value={applianceEntries[c.id]?.quantity||1} onChange={e=>{setApplianceEntries(old=>({...old,[c.id]:{kind:old[c.id]?.kind||'unclassified',quantity:Number(e.target.value)}}));setApplyDocumentedDemand(false)}}/></td><td>{fmt(autoResidential.factorForCircuit(c))}</td></tr>)}</tbody></table></div><p className="hint">Circuitos antigos não recebem classificação automática presumida. Revise cada TUE antes de confirmar a demanda. O cadastro é salvo no projeto junto com a memória de cálculo; não exige alteração no banco.</p></div>}
@@ -1155,23 +1233,25 @@ async function ensureEletriProject(clientId:string,userId:string){
  return String(created.data.id);
 }
 // v0.7.39: sincronização automática por circuito; preserva preços e itens manuais.
-function generatedCircuitItems(c:SavedCircuit){
+function generatedCircuitItems(c:SavedCircuit,settings?:InstallationSettings,rooms?:SavedEnvironment[],catalog:CatalogDescription[]=[]){
  const d=c.data||{},r=(d.results||{}) as Record<string,unknown>;
- const section=Number(r.selectedSection),breaker=Number(r.breaker),length=Number(d.length);
+ const live=settings?liveCircuitSizing(c,settings,rooms):null;
+ const section=Number(settings?live?.selectedSection:r.selectedSection),breaker=Number(settings?live?.breaker:r.breaker),length=Number(d.length);
  if(!(section>0&&breaker>0))return null;
- const cfg=(d.installationSnapshot||defaultInstallation) as InstallationSettings;
+ const cfg=(settings||d.installationSnapshot||defaultInstallation) as InstallationSettings;
  const wiring=String(d.wiring||cfg.wiring||'phase-neutral');
- const list=budgetCableItems({length,size:section,material:String(d.material||cfg.conductorMaterial||'copper'),insulation:String(d.insulation||cfg.conductorInsulation||'PVC 70 °C'),circuit:String(d.circuit||'tug'),wiring,breaker,curve:String(r.curve||'a confirmar'),poles:wiring==='phase-neutral'?1:wiring==='phase-phase'?2:3});
- return list.map((item,i)=>({description:item.description,quantity:item.quantity,unit:item.unit,source_key:`${c.id}:${item.description.includes('Disjuntor')?'breaker':item.description.includes('(Fase)')?'phase':item.description.includes('(Neutro)')?'neutral':item.description.includes('(Retorno)')?'return':item.description.includes('(Proteção (PE))')?'pe':i}`}));
+ const list=budgetCableItems({length,size:section,material:String(d.material||cfg.conductorMaterial||'copper'),insulation:String(d.insulation||cfg.conductorInsulation||'PVC 70 °C'),circuit:String(d.circuit||'tug'),wiring,breaker,curve:String(live?.curve||r.curve||'a confirmar'),poles:wiring==='phase-neutral'?1:wiring==='phase-phase'?2:3,catalog});
+ return list.map((item,i)=>({description:item.description,quantity:item.quantity,unit:item.unit,source_key:`${c.id}:${item.id.startsWith('dj-')?'breaker':item.description.includes('(Fase)')?'phase':item.description.includes('(Neutro)')?'neutral':item.description.includes('(Retorno)')?'return':item.description.includes('(Proteção (PE))')?'pe':i}`}));
 }
-async function syncCircuitMaterials(projectId:string,circuit:SavedCircuit|null,removedId?:string){
+async function syncCircuitMaterials(projectId:string,circuit:SavedCircuit|null,removedId?:string,settings?:InstallationSettings,rooms?:SavedEnvironment[]){
  if(!supabase)throw new Error('Supabase indisponível');
  const id=removedId||circuit?.id;
  if(!id)return;
  const found=await supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',projectId).not('source_key','is',null);
  if(found.error)throw found.error;
  const existing=((found.data||[]) as GeneratedMaterial[]).filter(x=>x.source_key?.startsWith(id+':'));
- const desired=circuit?generatedCircuitItems(circuit):[];
+ const catalog=circuit?await loadActiveElectricalCatalog():[];
+ const desired=circuit?generatedCircuitItems(circuit,settings,rooms,catalog):[];
  // Sem dimensionamento válido, não apaga materiais existentes: exige revisão.
  if(desired===null)throw new Error('Circuito sem dimensionamento completo. Materiais anteriores preservados para revisão.');
  for(const item of desired||[]){
@@ -1209,7 +1289,7 @@ function consolidateMaterialRows(items:MaterialRow[]):MaterialRow[]{
  }
  return [...grouped.values()].sort((a,b)=>a.description.localeCompare(b.description,'pt-BR',{sensitivity:'base',numeric:true}));
 }
-function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,accent}:{clientId:string;userId:string;localBudget:BudgetItem[];client:Client;professional:string;logo:string;accent:string}){
+function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,accent,settings}:{clientId:string;userId:string;localBudget:BudgetItem[];client:Client;professional:string;logo:string;accent:string;settings:InstallationSettings}){
  const [rows,setRows]=useState<MaterialRow[]>([]),[projectId,setProjectId]=useState(''),[busy,setBusy]=useState(false),[status,setStatus]=useState('');
  const [description,setDescription]=useState(''),[quantity,setQuantity]=useState('1'),[unit,setUnit]=useState('un'),[unitPrice,setUnitPrice]=useState('0');
  const [editingId,setEditingId]=useState<string|null>(null);
@@ -1273,8 +1353,11 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
   try{
    const cr=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',projectId);
    if(cr.error)throw cr.error;
+   const er=await supabase.from('eletripro_environments').select('id,title,data').eq('project_id',projectId);
+   if(er.error)throw er.error;
+   const currentRooms=(er.data||[]) as SavedEnvironment[];
    const skipped:string[]=[];
-   for(const c of (cr.data||[]) as SavedCircuit[]){try{await syncCircuitMaterials(projectId,c)}catch(e){skipped.push(c.title+': '+String(e))}}
+   for(const c of (cr.data||[]) as SavedCircuit[]){try{await syncCircuitMaterials(projectId,c,undefined,settings,currentRooms)}catch(e){skipped.push(c.title+': '+String(e))}}
    await syncUnifiedBudget(projectId);
    setStatus(skipped.length?'Revisar circuitos: '+skipped.join('; '):'Materiais e orçamento operacional sincronizados.');setRefreshCount(x=>x+1);
   }catch(e){setStatus('Erro na consolidação: '+String(e))}finally{setBusy(false)}
@@ -1627,11 +1710,11 @@ function maintenanceReportSections(m:MaintenanceData,projectCircuits:SavedCircui
  sections.push({title:'Circuitos da instalação existente',headers:['Circuito','Ligação','Potência atual (VA)','Nova potência (VA)','Comprimento (m)','Disjuntor (A)','Seção (mm²)','Condição'],rows:m.circuits.map(c=>[c.name||'Sem identificação',c.phase||'—',c.power||'—',c.newLoad?(c.newPower||'Pendente'):'Sem alteração',c.length||'—',c.breaker||'—',c.section||'—',c.condition==='ok'?'Sem anomalia aparente':c.condition==='issue'?'Não conformidade':c.condition==='review'?'Requer avaliação':'Não verificada'])});
  return sections;
 }
-function maintenanceMaterialSections(m:MaintenanceData):ReportSection[]{
+function maintenanceMaterialSections(m:MaintenanceData,catalog:CatalogDescription[]=[]):ReportSection[]{
  const rows:(string|number|null|undefined)[][]=[];
  const add=(item:string,unit:string,qty:number|string,source:string)=>rows.push([item,unit,String(qty),source]);
  const cableTotals=new Map<string,number>();
- const addCable=(section:string,kind:string,meters:number)=>{if(!(meters>0))return;const key=`Cabo cobre ${section} mm² — ${kind}`;cableTotals.set(key,(cableTotals.get(key)||0)+meters)};
+ const addCable=(section:string,kind:string,meters:number)=>{if(!(meters>0))return;const key=`${catalogCableDescription(catalog,Number(section),'copper','PVC 70 °C')||`Cabo cobre ${section} mm²`} — ${kind}`;cableTotals.set(key,(cableTotals.get(key)||0)+meters)};
  for(const c of m.circuits){
   if(c.changeCables){
    const length=Number(c.length),section=Number(c.proposedSection);
@@ -1639,7 +1722,7 @@ function maintenanceMaterialSections(m:MaintenanceData):ReportSection[]{
     for(const [kind,count] of [['fase',c.phaseConductors??'1'],['neutro',c.neutralConductors??'1'],['PE (terra)',c.earthConductors??'1']] as [string,string][]){const n=Number(count);if(Number.isInteger(n)&&n>0)addCable(String(section),kind,length*n)}
    }else add(`Cabos do circuito ${c.name||'sem nome'}`,'m','A definir','Informar seção e comprimento para quantificar');
   }
-  if(c.changeBreaker)add(`Disjuntor ${c.proposedBreaker||'a definir'} A`,'un.',1,`Substituição prevista — ${c.name||'circuito'}`);
+  if(c.changeBreaker){const nominal=Number(c.proposedBreaker);const poles=m.circuitConnection==='F+F+T'?2:1;add((nominal>0?catalogBreakerDescription(catalog,nominal,poles,''):null)||`Disjuntor ${c.proposedBreaker||'a definir'} A`,'un.',1,`Substituição prevista — ${c.name||'circuito'}`);}
  }
  for(const [name,meters] of cableTotals)add(name,'m',Number(meters.toFixed(2)),'Substituições selecionadas nos circuitos existentes');
  for(const [items,category] of [[m.outlets||[],'Tomadas'],[m.lightingFixtures||[],'Iluminação'],[m.dedicatedCircuits||[],'Equipamentos específicos']] as [MaintenanceCount[],string][]){
@@ -1652,10 +1735,10 @@ function maintenanceMaterialSections(m:MaintenanceData):ReportSection[]{
   if(!result?.choice)continue;
   const phaseCount=m.circuitConnection==='F+F+T'?2:1,neutralCount=m.circuitConnection==='F+N+T'?1:0;
   const perConductor=Number(x.lengthM);
-  add(`Cabo ${result.choice.section} mm² — fase (${x.type})`,'m',Number((perConductor*phaseCount).toFixed(2)),'Estimativa; validar antes da compra');
-  if(neutralCount)add(`Cabo ${result.choice.section} mm² — neutro (${x.type})`,'m',Number((perConductor*neutralCount).toFixed(2)),'Estimativa; validar antes da compra');
+  add(`${catalogCableDescription(catalog,result.choice.section,'copper','PVC 70 °C')||`Cabo ${result.choice.section} mm²`} — fase (${x.type})`,'m',Number((perConductor*phaseCount).toFixed(2)),'Estimativa; validar antes da compra');
+  if(neutralCount)add(`${catalogCableDescription(catalog,result.choice.section,'copper','PVC 70 °C')||`Cabo ${result.choice.section} mm²`} — neutro (${x.type})`,'m',Number((perConductor*neutralCount).toFixed(2)),'Estimativa; validar antes da compra');
   add(`Cabo PE (terra) — seção a validar (${x.type})`,'m',perConductor,'Estimativa; dimensionar PE conforme NBR 5410');
-  add(`Disjuntor ${result.choice.breaker} A — ${x.type}`,'un.',1,'Estimativa; confirmar polos, curva e proteção');
+  add(`${catalogBreakerDescription(catalog,result.choice.breaker,phaseCount,'')||`Disjuntor ${result.choice.breaker} A`} — ${x.type}`,'un.',1,'Estimativa; confirmar polos, curva e proteção');
  }
  if(!rows.length)add('Nenhum material quantificado','—','—','Informar itens e circuitos a substituir');
  return [{title:'Lista de materiais e quantidades — manutenção',headers:['Material / item','Unidade','Quantidade','Observação'],rows}];
@@ -1697,9 +1780,10 @@ function TechnicalReport({client,userId,professional,logo,accent,settings,mainte
    const pr=await supabase.from('eletripro_projects').select('id,installation').eq('client_id',client.id).eq('owner_id',userId).maybeSingle();
    if(pr.error)throw pr.error;
    const project=pr.data,id=project?.id;
+   const catalog=await loadActiveElectricalCatalog();
    const [cr,er,mr]=await Promise.all([
-    id&&!maintenanceMode&&(options.circuits||options.distribution||options.maintenanceProposal)?supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
-    id&&!maintenanceMode&&options.environments?supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
+    id&&!maintenanceMode&&(options.circuits||options.distribution||options.feeder||options.maintenanceProposal)?supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
+    id&&!maintenanceMode&&(options.environments||options.circuits||options.distribution||options.feeder)?supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
     id&&!maintenanceMode&&(options.materials||options.labor)?supabase.from('eletripro_materials').select('*').eq('project_id',id):Promise.resolve({data:[],error:null})
    ]);
    for(const r of [cr,er,mr])if(r.error)throw r.error;
@@ -1711,33 +1795,36 @@ function TechnicalReport({client,userId,professional,logo,accent,settings,mainte
     ['Aplicação',translated(d.application)],['Fornecimento',translated(d.supply)],['Tensão (V)',d.voltage],['Método de referência',d.method],['Temperatura (°C)',d.temperature],['Fator de potência',d.powerFactor],['Material condutor',translated(d.conductorMaterial)],['Isolação',d.conductorInsulation],['Agrupamento',d.groupCount],['Disposição do agrupamento',translated(d.groupMode)],['Modo de instalação',translated(d.wiring)]
    ]);
    if(options.environments)add('Ambientes',['Ambiente','Características'],rooms.map(r=>{const a=r.data||{},estimate=estimateRoom(r);return [r.title,`Tipo: ${reportText(a.kind)} | Área: ${reportNum(estimate?.area??a.area)} m² | Dimensões: ${reportNum(a.width)} × ${reportNum(a.length)} m | Perímetro: ${estimate?reportNum(estimate.perimeter)+' m':'Não informado'} | Iluminação: ${estimate?reportNum(estimate.lighting)+' VA':'Não informado'} | TUG: ${estimate?.outlets??'Não informado'} ponto(s), ${estimate?.tug===null?'A definir':reportNum(estimate?.tug)+' VA'}${a.notes?' | Observações: '+a.notes:''}`]}));
-   const result=(c:SavedCircuit)=>(c.data.results||{}) as Record<string,unknown>;
-   if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência (W)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type||( /iluminaç[aã]o|lighting/i.test(c.title)?'lighting':undefined)),reportNum(c.data.power),reportText(result(c).breaker),reportText(result(c).selectedSection)]));
-   if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Corrente de Projeto (A)'],[...circuits].sort((a,b)=>(Number(result(b).breaker)||0)-(Number(result(a).breaker)||0)).map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c).breaker?`${result(c).breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c).selectedSection),reportNum(result(c).current)]}));
+   const result=(c:SavedCircuit)=>liveCircuitSizing(c,d,rooms);
+   if(options.circuits)add('Circuitos dimensionados',['Circuito','Tipo','Potência aparente (VA)','Disjuntor (A)','Condutor (mm²)'],circuits.map(c=>[c.title,translated(c.data.circuit||c.data.type||( /iluminaç[aã]o|lighting/i.test(c.title)?'lighting':undefined)),reportNum(feederCircuitElectrical(c,d,rooms).va),reportText(result(c)?.breaker),reportText(result(c)?.selectedSection)]));
+   if(options.distribution)add('Quadro de distribuição',['Circuito','Fase(s)','Disjuntor','Seção (mm²)','Corrente de Projeto (A)'],[...circuits].sort((a,b)=>(Number(result(b)?.breaker)||0)-(Number(result(a)?.breaker)||0)).map(c=>{const poles=panelPoles(c,d),valid=panelChoices(d,poles);const stored=String(c.data.panelConnection||c.data.panelPhase||'');const connection=valid.includes(stored as PanelConnection)?stored:valid[0];return [c.title,connection,result(c)?.breaker?`${result(c)?.breaker} A / ${poles} polo(s)`:'Não informado',reportText(result(c)?.selectedSection),reportNum(feederCircuitElectrical(c,d,rooms).current)]}));
    if(options.feeder){
     const feeder=project?.installation?.feeder as (FeederForm&{calculation?:Record<string,unknown>})|undefined;
     const f=feeder?.calculation;
+    const currentCelesc=celescAutomaticSupply(circuits,d,rooms);
+    const feederCurrent=Boolean(f&&typeof f.sourceRevision==='string'&&f.sourceRevision===feederSourceRevision(circuits,rooms,d));
+    const savedFeederValue=(value:unknown)=>feederCurrent?reportNum(value):'Não exibido — recalcular alimentador';
     add('Alimentador geral',['Parâmetro','Valor'],f?[
-     ['CELESC — categoria (indicativa)',reportText((f.celescEntry as Record<string,unknown>|null)?.category)],['CELESC — carga instalada (kW)',reportNum((f.celescEntry as Record<string,unknown>|null)?.installedKW)],['CELESC — disjuntor padrão IEC/DIN (A)',reportNum((f.celescEntry as Record<string,unknown>|null)?.breakerIEC)],['CELESC — ramal entrada PVC 70 °C (mm²)',reportNum((f.celescEntry as Record<string,unknown>|null)?.entryPVC)],['CELESC — ramal entrada XLPE/EPR 90 °C (mm²)',reportNum((f.celescEntry as Record<string,unknown>|null)?.entryXLPE)],['CELESC — referência e limites',reportText((f.celescEntry as Record<string,unknown>|null)?.source)],['Potência demandada (W)',reportNum(f.power)],['Fator de demanda',reportText(f.demand)],
-     ['Corrente de projeto (A)',reportNum(f.ib)],['Condutor de fase (mm²)',reportNum(f.section)],
-     ['Coordenação — maior disjuntor terminal (A)',reportNum((f.coordinationAudit as Record<string,unknown>|null)?.largestTerminalBreaker)],['Coordenação — comparação nominal',reportText((f.coordinationAudit as Record<string,unknown>|null)?.status)],['Seletividade comprovada','Não — verificar curvas e curto-circuito'],['Capacidade corrigida Iz (A)',reportNum(f.iz)],['Disjuntor geral (A)',reportNum(f.breaker)],
-     ['Neutro (mm²)',reportNum(f.neutral)],['PE preliminar (mm²)',reportNum(f.pe)],
-     ['Queda resistiva estimada (%)',reportNum(f.dropPercent)],
+     ['Situação do dimensionamento salvo',feederCurrent?'Referências de cargas e instalação inalteradas desde o salvamento (não substitui verificação técnica)':'DESATUALIZADO OU NÃO VERIFICÁVEL — recalcular alimentador antes de utilizar os valores salvos'],['CELESC — categoria atual (indicativa)',currentCelesc.entry?.category||'Não determinada — revisar parâmetros'],['CELESC — carga instalada atual (kW)',Number.isFinite(currentCelesc.installedKW)?reportNum(currentCelesc.installedKW):'Indisponível — conferir potências e ambientes'],['CELESC — disjuntor padrão IEC/DIN indicativo (A)',reportNum(currentCelesc.entry?.breakerIEC)],['CELESC — ramal entrada PVC 70 °C indicativo (mm²)',reportNum(currentCelesc.entry?.entryPVC)],['CELESC — ramal entrada XLPE/EPR 90 °C indicativo (mm²)',reportNum(currentCelesc.entry?.entryXLPE)],['CELESC — referência e limites',celescEntryReference],['Potência do alimentador salva (verificar unidade e atualização)',savedFeederValue(f.power)],['Fator de demanda',reportText(f.demand)],
+     ['Aviso de atualização','Dados do alimentador salvos anteriormente; recalcular o alimentador após alterações de cargas, ambientes ou parâmetros da instalação.'],['Corrente de projeto salva (A)',savedFeederValue(f.ib)],['Condutor de fase salvo (mm²)',savedFeederValue(f.section)],
+     ['Coordenação — maior disjuntor terminal (A)',savedFeederValue((f.coordinationAudit as Record<string,unknown>|null)?.largestTerminalBreaker)],['Coordenação — comparação nominal',feederCurrent?reportText((f.coordinationAudit as Record<string,unknown>|null)?.status):'Não exibido — recalcular alimentador'],['Seletividade comprovada','Não — verificar curvas e curto-circuito'],['Capacidade corrigida Iz (A)',savedFeederValue(f.iz)],['Disjuntor geral salvo (A)',savedFeederValue(f.breaker)],
+     ['Neutro (mm²)',savedFeederValue(f.neutral)],['PE preliminar (mm²)',savedFeederValue(f.pe)],
+     ['Queda resistiva estimada (%)',savedFeederValue(f.dropPercent)],
      ['Critério de demanda / observações',reportText(feeder?.notes)]
-    ]:[['Situação','Dimensionamento do alimentador ainda não cadastrado']]);
+    ]:[['CELESC — carga instalada atual (kW)',Number.isFinite(currentCelesc.installedKW)?reportNum(currentCelesc.installedKW):'Indisponível — conferir dados'],['CELESC — categoria indicativa',currentCelesc.entry?.category||'Não determinada'],['Situação','Dimensionamento do alimentador ainda não cadastrado']]);
    }
    const maintenance=safeMaintenance(project?.installation?.maintenance);
    const feederCalc=(project?.installation?.feeder as {calculation?:Record<string,unknown>}|undefined)?.calculation;
-   if(maintenanceMode&&options.maintenanceSurvey){sections.push(...maintenanceReportSections(maintenance,circuits,feederCalc));sections.push(...maintenanceMaterialSections(maintenance));}
+   if(maintenanceMode&&options.maintenanceSurvey){sections.push(...maintenanceReportSections(maintenance,circuits,feederCalc));sections.push(...maintenanceMaterialSections(maintenance,catalog));}
    if(maintenanceMode&&options.maintenanceProposal)sections.push(...maintenanceProposalSections(maintenance,circuits,feederCalc));
    if(maintenanceMode&&options.labor&&(maintenance.generalLaborDescription?.trim()||Number(maintenance.generalLaborPrice)>0))sections.push({title:'Mão de obra geral',headers:['Descrição','Valor (R$)'],rows:[[maintenance.generalLaborDescription||'Serviços de manutenção',options.values?(Number(maintenance.generalLaborPrice)||0).toLocaleString('pt-BR',{minimumFractionDigits:2}):'Oculto']]});
    const maintenanceMaterials:MaterialRow[]=maintenanceMode?maintenance.circuits.flatMap(c=>{
     const rows:MaterialRow[]=[];const length=Number(c.length),section=Number(c.proposedSection),price=Number(c.materialUnitPrice)||0;
     if(c.changeCables&&section>0&&length>0){
      const counts:[string,number][]=[['fase',Number(c.phaseConductors??1)],['neutro',Number(c.neutralConductors??1)],['PE',Number(c.earthConductors??1)]];
-     for(const [type,count] of counts)if(Number.isInteger(count)&&count>0)rows.push({id:`cabo-${type}-${c.id}`,item_type:'material',description:`Cabo cobre PVC 70 °C ${section} mm² — ${type} — ${c.name}`,quantity:length*count,unit:'m',unit_price:price} as MaterialRow);
+     for(const [type,count] of counts)if(Number.isInteger(count)&&count>0)rows.push({id:`cabo-${type}-${c.id}`,item_type:'material',description:`${catalogCableDescription(catalog,section,'copper','PVC 70 °C')||`Cabo cobre PVC 70 °C ${section} mm²`} — ${type} — ${c.name}`,quantity:length*count,unit:'m',unit_price:price} as MaterialRow);
     }
-    if(c.changeBreaker&&Number(c.proposedBreaker)>0)rows.push({id:`disj-${c.id}`,item_type:'material',description:`Disjuntor ${c.proposedBreaker} A — ${c.name}`,quantity:1,unit:'un',unit_price:Number(c.breakerUnitPrice)||0} as MaterialRow);
+    if(c.changeBreaker&&Number(c.proposedBreaker)>0)rows.push({id:`disj-${c.id}`,item_type:'material',description:`${catalogBreakerDescription(catalog,Number(c.proposedBreaker),maintenance.circuitConnection==='F+F+T'?2:1,'')||`Disjuntor ${c.proposedBreaker} A`} — ${c.name}`,quantity:1,unit:'un',unit_price:Number(c.breakerUnitPrice)||0} as MaterialRow);
     if(c.laborDescription?.trim())rows.push({id:`labor-${c.id}`,item_type:'labor',description:`${c.laborDescription} — ${c.name}`,quantity:1,unit:'serviço',unit_price:Number(c.laborPrice)||0} as MaterialRow);
     return rows;
    }):[];
@@ -1762,6 +1849,66 @@ type AdminPlan={id:string;name:string;price_cents:number;billing_months:number;a
 type AdminPayment={id:string;account_id:string;amount_cents:number;paid_at:string};
 type SubscriptionRequest={id:string;account_id:string;plan_id:string;plan_name:string;amount_cents:number;status:string;requested_at:string;email?:string};
 const adminDate=(v:string|null)=>v?new Date(v).toLocaleDateString('pt-BR'):'—';
+
+type ElectricalCatalogItem={id:string;category:'cabo'|'disjuntor'|'dr'|'dps';name:string;description:string|null;section_mm2:number|null;nominal_a:number|null;poles:number|null;curve:string|null;material:string|null;insulation:string|null;active:boolean;updated_at:string};
+const emptyElectricalItem={category:'cabo' as ElectricalCatalogItem['category'],name:'',description:'',section_mm2:'',nominal_a:'',poles:'',curve:'',material:'',insulation:'',active:true};
+function ElectricalCatalogAdmin(){
+ const [items,setItems]=useState<ElectricalCatalogItem[]>([]);
+ const [filter,setFilter]=useState('todos');
+ const [form,setForm]=useState({...emptyElectricalItem});
+ const [editing,setEditing]=useState<string|null>(null);
+ const [busy,setBusy]=useState(false);
+ const [error,setError]=useState('');
+ const [notice,setNotice]=useState('');
+ const load=async()=>{
+  if(!supabase)return;
+  const {data,error:loadError}=await supabase.from('eletripro_electrical_catalog').select('*').order('category').order('name');
+  if(loadError)setError('Não foi possível carregar o catálogo. Execute o SQL da etapa 9 antes de publicar: '+loadError.message);
+  else{setItems((data||[]) as ElectricalCatalogItem[]);setError('');}
+ };
+ useEffect(()=>{void load()},[]);
+ const edit=(item:ElectricalCatalogItem)=>{
+  setEditing(item.id);setForm({category:item.category,name:item.name,description:item.description||'',section_mm2:item.section_mm2==null?'':String(item.section_mm2),nominal_a:item.nominal_a==null?'':String(item.nominal_a),poles:item.poles==null?'':String(item.poles),curve:item.curve||'',material:item.material||'',insulation:item.insulation||'',active:item.active});
+ };
+ const save=async(e:React.FormEvent)=>{
+  e.preventDefault();if(!supabase||busy)return;
+  setError('');setNotice('');
+  const payload={category:form.category,name:form.name.trim(),description:form.description.trim()||null,section_mm2:form.category==='cabo'&&form.section_mm2?Number(form.section_mm2):null,nominal_a:form.category!=='cabo'&&form.nominal_a?Number(form.nominal_a):null,poles:form.category!=='cabo'&&form.poles?Number(form.poles):null,curve:form.category==='disjuntor'?(form.curve.trim()||null):null,material:form.category==='cabo'?(form.material.trim()||null):null,insulation:form.category==='cabo'?(form.insulation.trim()||null):null,active:form.active};
+  if(!payload.name){setError('Informe a descrição do dispositivo.');return;}
+  if(payload.section_mm2!==null&&(!Number.isFinite(payload.section_mm2)||payload.section_mm2<=0)){setError('Seção inválida.');return;}
+  if(payload.nominal_a!==null&&(!Number.isFinite(payload.nominal_a)||payload.nominal_a<=0)){setError('Corrente nominal inválida.');return;}
+  setBusy(true);
+  const result=editing?await supabase.from('eletripro_electrical_catalog').update(payload).eq('id',editing):await supabase.from('eletripro_electrical_catalog').insert(payload);
+  if(result.error)setError(result.error.message);
+  else{setNotice(editing?'Registro atualizado.':'Registro cadastrado.');setEditing(null);setForm({...emptyElectricalItem});await load();}
+  setBusy(false);
+ };
+ const toggle=async(item:ElectricalCatalogItem)=>{
+  if(!supabase||busy)return;setBusy(true);setError('');
+  const {error:saveError}=await supabase.from('eletripro_electrical_catalog').update({active:!item.active}).eq('id',item.id);
+  if(saveError)setError(saveError.message);else await load();
+  setBusy(false);
+ };
+ return <div className="ep-admin"><section className="panel">
+  <h2>Banco de Dados Elétricos</h2>
+  <p className="hint">Cadastro administrativo de cabos, disjuntores, dispositivos DR e DPS. Registros inativos são preservados. Os dados são armazenados no Supabase e protegidos por permissões administrativas.</p>
+  <p className="hint"><strong>Importante:</strong> nesta etapa o cadastro é um inventário técnico. Alterações não modificam automaticamente as tabelas normativas de capacidade de corrente ou os critérios do motor de dimensionamento; essa integração exige validação técnica.</p>
+  {error&&<p className="notice" role="alert">{error}</p>}{notice&&<p className="hint" role="status">{notice}</p>}
+  <form className="form" onSubmit={save}>
+   <h3>{editing?'Editar dispositivo':'Cadastrar dispositivo'}</h3>
+   <div className="two"><label>Categoria<select value={form.category} onChange={e=>setForm({...form,category:e.target.value as ElectricalCatalogItem['category']})}><option value="cabo">Cabo</option><option value="disjuntor">Disjuntor</option><option value="dr">DR</option><option value="dps">DPS</option></select></label><label>Descrição / identificação<input required maxLength={180} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label></div>
+   <label>Observações técnicas<textarea rows={2} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label>
+   {form.category==='cabo'?<div className="two"><label>Seção nominal (mm²)<input type="number" min="0.1" step="any" value={form.section_mm2} onChange={e=>setForm({...form,section_mm2:e.target.value})}/></label><label>Material<input value={form.material} placeholder="Ex.: cobre" onChange={e=>setForm({...form,material:e.target.value})}/></label><label>Isolação<input value={form.insulation} placeholder="Ex.: PVC 70 °C" onChange={e=>setForm({...form,insulation:e.target.value})}/></label></div>:<div className="two"><label>Corrente nominal (A)<input type="number" min="0.1" step="any" value={form.nominal_a} onChange={e=>setForm({...form,nominal_a:e.target.value})}/></label><label>Número de polos<input type="number" min="1" max="4" step="1" value={form.poles} onChange={e=>setForm({...form,poles:e.target.value})}/></label>{form.category==='disjuntor'&&<label>Curva<input value={form.curve} placeholder="Ex.: C" onChange={e=>setForm({...form,curve:e.target.value})}/></label>}</div>}
+   <label><input type="checkbox" checked={form.active} onChange={e=>setForm({...form,active:e.target.checked})}/> Dispositivo ativo</label>
+   <div className="actions"><button className="primary" disabled={busy} type="submit">{busy?'Salvando...':editing?'Salvar alterações':'Cadastrar'}</button>{editing&&<button type="button" className="outline" onClick={()=>{setEditing(null);setForm({...emptyElectricalItem})}}>Cancelar edição</button>}</div>
+  </form>
+ </section><section className="panel">
+ <div className="two"><h3>Dispositivos cadastrados ({items.length})</h3><label>Filtrar categoria<select value={filter} onChange={e=>setFilter(e.target.value)}><option value="todos">Todas</option><option value="cabo">Cabos</option><option value="disjuntor">Disjuntores</option><option value="dr">DR</option><option value="dps">DPS</option></select></label></div>
+ <div className="ep-admin-table"><table><thead><tr><th>Categoria</th><th>Descrição</th><th>Características</th><th>Status</th><th>Ações</th></tr></thead><tbody>{items.filter(item=>filter==='todos'||item.category===filter).map(item=><tr key={item.id}><td>{item.category.toUpperCase()}</td><td><strong>{item.name}</strong><small style={{display:'block'}}>{item.description}</small></td><td>{item.category==='cabo'?[item.section_mm2!=null?item.section_mm2+' mm²':'',item.material,item.insulation].filter(Boolean).join(' · '):[item.nominal_a!=null?item.nominal_a+' A':'',item.poles!=null?item.poles+' polos':'',item.curve?'Curva '+item.curve:''].filter(Boolean).join(' · ')}</td><td>{item.active?'Ativo':'Inativo'}</td><td><button className="outline" type="button" disabled={busy} onClick={()=>edit(item)}>Editar</button> <button className="outline" type="button" disabled={busy} onClick={()=>void toggle(item)}>{item.active?'Desativar':'Ativar'}</button></td></tr>)}</tbody></table></div>
+ {items.length===0&&!error&&<p className="hint">Nenhum dispositivo cadastrado. Use o formulário acima para começar.</p>}
+ </section></div>;
+}
+
 function AdminPanel({section}:{section:string}){
  const[accounts,setAccounts]=useState<AdminAccount[]>([]),[plans,setPlans]=useState<AdminPlan[]>([]),[payments,setPayments]=useState<AdminPayment[]>([]),[requests,setRequests]=useState<SubscriptionRequest[]>([]);
  const[busy,setBusy]=useState(false),[error,setError]=useState(''),[search,setSearch]=useState('');
@@ -1843,14 +1990,15 @@ function App(){const[session,setSession]=useState<any>(null),[email,setEmail]=us
  const addManualBudgetItem=()=>{const desc=manualDescription.trim();const qty=Number(manualQty),price=Number(manualPrice);if(!desc||!Number.isFinite(qty)||qty<=0||!Number.isFinite(price)||price<0)return;setBudgetItems(old=>[...old,{id:'manual-'+Date.now()+'-'+Math.random().toString(36).slice(2),description:desc,unit:manualUnit,quantity:qty,unitPrice:price}]);setManualDescription('');setManualQty('1');setManualPrice('0')};
  const [installationSettings,setInstallationSettings]=useState<InstallationSettings>(readInstallation);
  const [supplyCircuits,setSupplyCircuits]=useState<SavedCircuit[]>([]);
+ const [supplyRooms,setSupplyRooms]=useState<SavedEnvironment[]>([]);
  const [supplyLoaded,setSupplyLoaded]=useState(false);
- const autoSupply=celescAutomaticSupply(supplyCircuits,installationSettings);
+ const autoSupply=celescAutomaticSupply(supplyCircuits,installationSettings,supplyRooms);
  const effectiveInstallation:InstallationSettings=autoSupply.supply?{...installationSettings,supply:autoSupply.supply}:installationSettings;
  const supplyReady=supplyLoaded&&Boolean(autoSupply.supply)&&!autoSupply.requiresTechnicalReview;
- const supplyRevision=supplyCircuits.map(c=>[c.id,c.data.power,c.data.powerVA,c.data.pf,c.data.panelPoles,c.data.poles,c.data.results?.poles].join(':')).sort().join('|')+'-'+autoSupply.supply;
- useEffect(()=>{let active=true;setSupplyLoaded(false);setSupplyCircuits([]);
+ const supplyRevision=supplyCircuits.map(c=>[c.id,c.data.power,c.data.powerVA,c.data.pf,c.data.panelPoles,c.data.poles,c.data.results?.poles].join(':')).sort().join('|')+'-'+supplyRooms.map(r=>[r.id,JSON.stringify(r.data)].join(':')).sort().join('|')+'-'+autoSupply.supply;
+ useEffect(()=>{let active=true;setSupplyLoaded(false);setSupplyCircuits([]);setSupplyRooms([]);
   if(!activeClientId||!session?.user?.id||!supabase)return;
-  void(async()=>{try{const id=await ensureEletriProject(activeClientId,session.user.id);const r=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id);if(active){if(r.error){setSupplyCircuits([]);setMsg('Erro ao atualizar os circuitos: '+r.error.message)}else setSupplyCircuits((r.data||[]) as SavedCircuit[])}}finally{if(active)setSupplyLoaded(true)}})();
+  void(async()=>{try{const id=await ensureEletriProject(activeClientId,session.user.id);const [r,er]=await Promise.all([supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id),supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id)]);if(active){if(r.error||er.error){setSupplyCircuits([]);setSupplyRooms([]);setMsg('Erro ao atualizar as cargas: '+(r.error||er.error)?.message)}else{setSupplyCircuits((r.data||[]) as SavedCircuit[]);setSupplyRooms((er.data||[]) as SavedEnvironment[])}}}finally{if(active)setSupplyLoaded(true)}})();
   return()=>{active=false};
  },[activeClientId,session?.user?.id,tab]);
 
@@ -2035,7 +2183,7 @@ if(session && !registrationComplete)return <div className="center"><section clas
 <button className="primary" type="submit" disabled={registrationBusy}>{registrationBusy?'Salvando...':'Concluir cadastro e acessar'}</button>
 <button type="button" className="link-button" onClick={()=>supabase?.auth.signOut()}>Sair da conta</button>
 {msg&&<div className="notice">{msg}</div>}{termsOpen&&<EletriProTerms onClose={()=>setTermsOpen(false)}/>}</form></section></div>;
-return <div className="app" style={{'--accent':accent} as React.CSSProperties}><aside className={menu?'open':''}><div className="sidebar-head"><div className="brand"><Zap/> EletriPro</div><button className="icon-button close-menu" onClick={()=>setMenu(false)} aria-label="Fechar menu"><X/></button></div><span className="eyebrow">ÁREA PROFISSIONAL</span><nav>{nav}{isAdmin&&<><span className="eyebrow">ADMINISTRAÇÃO</span>{['Gestão de contas','Indicadores administrativos','Configurações administrativas'].map(t=><button key={t} className={'nav-item '+(tab===t?'active':'')} onClick={()=>navigate(t)}><ShieldCheck size={19}/><span>{t}</span></button>)}</>}</nav><div className="sidebar-bottom"><span className="plan-chip">Plano {isAdmin&&adminAccessMode==='pro_isento'?'PRO ISENTO':isPro?'PRO':'FREE'}</span><button className="nav-item" onClick={()=>supabase.auth.signOut()}><LogOut size={19}/> Sair</button></div></aside>{menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}<nav className="ep-mobile-bottom-nav" aria-label="Navegação rápida"><button type="button" className={tab==='Painel'?'active':''} onClick={()=>navigate('Painel')}><LayoutDashboard size={21}/><span>Início</span></button><button type="button" className={tab==='Clientes'?'active':''} onClick={()=>navigate('Clientes')}><Users size={21}/><span>Clientes</span></button><button type="button" className={tab==='Dimensionamento'?'active':''} onClick={()=>navigate('Dimensionamento')}><Calculator size={21}/><span>Cálculos</span></button><button type="button" className={menu?'active':''} onClick={()=>setMenu(true)}><Menu size={21}/><span>Menu</span></button></nav><div className="main-wrap"><header className="topbar"><button className="icon-button mobile-menu" onClick={()=>setMenu(true)} aria-label="Abrir menu"><Menu/></button><div className="top-brand"><Zap size={20}/> EletriPro</div><div className="account-wrap"><button className="account-trigger" onClick={()=>setAccountMenu(!accountMenu)} aria-expanded={accountMenu} aria-label="Abrir menu da empresa"><span className="company-avatar">{logo?<img src={logo} alt="Logomarca da empresa"/>:<Building2 size={18}/>}</span><span className="company-name">{professional||'Configurar minha empresa'}</span><ChevronDown size={15}/></button>{accountMenu&&<div className="account-dropdown"><button onClick={()=>{navigate('Meu Perfil');setAccountMenu(false)}}>Meu Perfil</button><button onClick={()=>{navigate('Personalização');setAccountMenu(false)}}>Personalização</button><button onClick={()=>{navigate('Assinatura');setAccountMenu(false)}}>Assinatura</button><button onClick={()=>{setAccountMenu(false);void supabase.auth.signOut()}}>Sair</button></div>}</div></header><main className="content"><div className="page-heading"><div><span className="eyebrow">SUA ÁREA DE TRABALHO</span><h1>{tab==='Painel'?'Visão geral':tab}</h1></div><span className="plan-chip">{isAdmin&&adminAccessMode==='pro_isento'?'Pro Isento':isPro?planLabel:'Free'}</span></div>{msg&&<div className="notice">{msg}</div>}
+return <div className="app" style={{'--accent':accent} as React.CSSProperties}><aside className={menu?'open':''}><div className="sidebar-head"><div className="brand"><Zap/> EletriPro</div><button className="icon-button close-menu" onClick={()=>setMenu(false)} aria-label="Fechar menu"><X/></button></div><span className="eyebrow">ÁREA PROFISSIONAL</span><nav>{nav}{isAdmin&&<><span className="eyebrow">ADMINISTRAÇÃO</span>{['Gestão de contas','Indicadores administrativos','Configurações administrativas','Banco de Dados Elétricos'].map(t=><button key={t} className={'nav-item '+(tab===t?'active':'')} onClick={()=>navigate(t)}><ShieldCheck size={19}/><span>{t}</span></button>)}</>}</nav><div className="sidebar-bottom"><span className="plan-chip">Plano {isAdmin&&adminAccessMode==='pro_isento'?'PRO ISENTO':isPro?'PRO':'FREE'}</span><button className="nav-item" onClick={()=>supabase.auth.signOut()}><LogOut size={19}/> Sair</button></div></aside>{menu&&<div className="scrim" onClick={()=>setMenu(false)}/>}<nav className="ep-mobile-bottom-nav" aria-label="Navegação rápida"><button type="button" className={tab==='Painel'?'active':''} onClick={()=>navigate('Painel')}><LayoutDashboard size={21}/><span>Início</span></button><button type="button" className={tab==='Clientes'?'active':''} onClick={()=>navigate('Clientes')}><Users size={21}/><span>Clientes</span></button><button type="button" className={tab==='Dimensionamento'?'active':''} onClick={()=>navigate('Dimensionamento')}><Calculator size={21}/><span>Cálculos</span></button><button type="button" className={menu?'active':''} onClick={()=>setMenu(true)}><Menu size={21}/><span>Menu</span></button></nav><div className="main-wrap"><header className="topbar"><button className="icon-button mobile-menu" onClick={()=>setMenu(true)} aria-label="Abrir menu"><Menu/></button><div className="top-brand"><Zap size={20}/> EletriPro</div><div className="account-wrap"><button className="account-trigger" onClick={()=>setAccountMenu(!accountMenu)} aria-expanded={accountMenu} aria-label="Abrir menu da empresa"><span className="company-avatar">{logo?<img src={logo} alt="Logomarca da empresa"/>:<Building2 size={18}/>}</span><span className="company-name">{professional||'Configurar minha empresa'}</span><ChevronDown size={15}/></button>{accountMenu&&<div className="account-dropdown"><button onClick={()=>{navigate('Meu Perfil');setAccountMenu(false)}}>Meu Perfil</button><button onClick={()=>{navigate('Personalização');setAccountMenu(false)}}>Personalização</button><button onClick={()=>{navigate('Assinatura');setAccountMenu(false)}}>Assinatura</button><button onClick={()=>{setAccountMenu(false);void supabase.auth.signOut()}}>Sair</button></div>}</div></header><main className="content"><div className="page-heading"><div><span className="eyebrow">SUA ÁREA DE TRABALHO</span><h1>{tab==='Painel'?'Visão geral':tab}</h1></div><span className="plan-chip">{isAdmin&&adminAccessMode==='pro_isento'?'Pro Isento':isPro?planLabel:'Free'}</span></div>{msg&&<div className="notice">{msg}</div>}
 {tab==='Painel'&&<section className="ep-modern-home" aria-label="Acesso rápido aos serviços">
  <div className="ep-modern-hero"><div><span className="ep-modern-kicker"><Zap size={14}/> SEU DIA MAIS PRODUTIVO</span><h2>Seu trabalho, em um só lugar.</h2><p>Comece um atendimento, encontre um cliente ou consulte seus serviços com poucos toques.</p></div><button type="button" className="ep-modern-hero-action" onClick={()=>{navigate('Clientes');setClientFormOpen(true);setEditing(null);setName('');setPhone('');setClientEmail('');setClientLocation('')}}><Plus size={19}/> Novo cliente</button></div>
  <div className="ep-modern-section-title"><div><h2>Acesso rápido</h2><p>Escolha o que precisa fazer agora.</p></div></div>
@@ -2061,7 +2209,7 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {tab==='Clientes'&&<>{nextClientAction&&<section className="panel ep-next-action" role="status"><div><span className="eyebrow">CLIENTE CADASTRADO</span><h2>{nextClientAction.name}</h2><p>Cadastro salvo. Escolha o próximo passo do atendimento.</p></div><div className="ep-next-action-buttons"><button type="button" className="primary" onClick={()=>{const id=nextClientAction.id;setNextClientAction(null);openClient(id)}}><FolderOpen size={17}/> Iniciar projeto</button><button type="button" className="outline" onClick={()=>{const id=nextClientAction.id;setNextClientAction(null);openMaintenance(id)}}><ClipboardList size={17}/> Registrar manutenção</button><button type="button" className="outline" onClick={()=>setNextClientAction(null)}>Agora não</button></div></section>}<section className="panel"><div className="panel-heading"><div><h2>Meus clientes</h2><p>{isPro?'Cadastros sem limite':`${freeCreatesUsed} de 1 cadastro gratuito utilizado`}</p></div>{canCreate&&<button className="primary" onClick={()=>{setClientFormOpen(true);setEditing(null);setName('');setPhone('');setClientEmail('');setClientLocation('');setTimeout(()=>document.getElementById('client-form')?.scrollIntoView({behavior:'smooth'}),0)}}><Plus size={17}/> Novo</button>}</div><div className="ep-client-search"><Search size={19}/><input type="search" aria-label="Pesquisar clientes" placeholder="Pesquisar por nome, telefone, endereço ou e-mail" value={clientSearch} onChange={e=>setClientSearch(e.target.value)}/>{clientSearch&&<button type="button" onClick={()=>setClientSearch('')} aria-label="Limpar pesquisa"><X size={17}/></button>}</div>{clients.length===0?<div className="empty"><Users size={28}/><h3>Nenhum cliente cadastrado</h3><p>Cadastre seu primeiro cliente para começar.</p></div>:clients.filter(c=>matchesClientSearch(c,clientSearch)).length===0?<div className="empty"><Search size={28}/><h3>Nenhum cliente encontrado</h3><p>Tente outro nome, telefone ou endereço.</p><button type="button" className="outline" onClick={()=>setClientSearch('')}>Limpar pesquisa</button></div>:clients.filter(c=>matchesClientSearch(c,clientSearch)).map(c=><div className="client" key={c.id}><div><strong>{c.name}</strong><p>{c.phone||'Sem telefone'} · {c.location||'Local não informado'} · {c.email||'Sem e-mail'}</p><small>{isPro?'Plano Pro':`${freeEditsUsed} de 1 edição gratuita utilizada na conta`}</small></div><div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button className="outline" onClick={()=>void openWorkflow(c)}>{statusNames[workflows.find(w=>w.client_id===c.id)?.status||'awaiting']}</button><div style={{display:"flex",flexDirection:"column",gap:6}}><button className="primary" onClick={()=>openClient(c.id)}>Abrir projeto</button><button className="outline" onClick={()=>openMaintenance(c.id)}>Manutenção</button></div><button className="outline" disabled={loading||!canEdit} title={!canEdit?"Limite de 1 edição do plano Free atingido":"Editar cadastro"} onClick={()=>edit(c)}>Editar</button><button className="outline" disabled={loading} onClick={()=>void deleteClient(c)}>Excluir</button></div></div>)}</section>{clientFormOpen&&(editing?canEdit:canCreate)&&<form id="client-form" className="panel form" onSubmit={saveClient}><h2>{editing?'Editar cliente':'Novo cliente'}</h2><label>Nome completo<input required value={name} onChange={e=>setName(e.target.value)}/></label><label>Telefone<input required value={phone} onChange={e=>setPhone(e.target.value)}/></label><label>Local (endereço ou condomínio)<input required value={clientLocation} onChange={e=>setClientLocation(e.target.value)}/></label><label>E-mail<input type="email" value={clientEmail} onChange={e=>setClientEmail(e.target.value)}/></label><button type="submit" className="primary" disabled={loading||(editing?!canEdit:!canCreate)}>Salvar cliente</button>{!canEdit&&<p className="hint">Limite de edição gratuita da conta atingido. Para continuar, contrate um plano Pro.</p>}{<button type="button" className="outline" onClick={()=>{setEditing(null);setClientFormOpen(false)}}>Cancelar</button>}</form>}{!canCreate&&!editing&&<section className="panel"><p>Você já utilizou o cadastro gratuito do plano Free. Excluir um cliente não libera um novo cadastro.</p><button className="primary" onClick={()=>navigate('Assinatura')}>Conhecer Pro</button></section>}</>}
 {tab==='Personalização'&&<div className="brand-grid"><section className="panel form"><h2>Identidade profissional</h2><p>Defina como sua marca aparecerá nos documentos.</p><label>Nome profissional ou empresa<input value={professional} onChange={e=>setProfessional(e.target.value)} placeholder="Ex.: Minha Elétrica"/></label><label>Logomarca (PNG, JPG ou WebP)<span className="upload"><Upload size={18}/> Selecionar imagem<input type="file" accept="image/png,image/jpeg,image/webp" onChange={e=>pickLogo(e.target.files?.[0])}/></span></label><label>Cor de destaque</label><div className="swatches">{colors.map(c=><button type="button" key={c} onClick={()=>setAccent(c)} aria-label={'Selecionar '+c} className={accent===c?'selected':''} style={{background:c}}/>)}</div><button className="primary" disabled={loading} onClick={saveBrand}>Salvar personalização</button><p className="hint">Nome, cores e logomarca são sincronizados com sua conta no Supabase. A geração de PDF será implementada depois.</p></section><section className="panel"><h2>Prévia do documento</h2><div className="paper"><div className="paper-head">{logo?<img src={logo} alt="Logomarca"/>:<div className="paper-logo" style={{background:accent}}><Zap/></div>}<div><strong>{professional||'Sua empresa elétrica'}</strong><small>Orçamento de serviços</small></div></div><div className="paper-line" style={{background:accent}}/><p>CLIENTE: Nome do cliente</p><div className="paper-row"><span>Descrição dos serviços</span><span>Valor</span></div><div className="paper-row"><span>Instalação elétrica residencial</span><span>R$ 1.500,00</span></div><div className="paper-total">Total: R$ 1.500,00</div></div><p className="hint">Apenas visualização. Nenhum PDF é gerado nesta versão.</p></section></div>}
 {tab==='Meu Perfil'&&<form className="panel form profile-form" onSubmit={saveProfile}><h2>Meus dados</h2><p>Dados pessoais vinculados à sua conta. A confirmação do e-mail é gerenciada pelo Supabase.</p><label>E-mail<input type="email" value={session.user.email||''} disabled/></label><label>Nome completo<input value={fullName} onChange={e=>setFullName(e.target.value)}/></label><div className="two"><label>CPF<input inputMode="numeric" value={cpf} onChange={e=>setCpf(e.target.value.replace(/\D/g,'').slice(0,11))}/></label><label>Nascimento<input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></label></div><label>Telefone celular<input type="tel" inputMode="tel" placeholder="(48) 99999-9999" value={mobile} onChange={e=>setMobile(formatMobile(e.target.value))}/></label><h2>Endereço</h2><label>Rua / avenida<input value={street} onChange={e=>setStreet(e.target.value)}/></label><div className="two"><label>Número<input value={number} onChange={e=>setNumber(e.target.value)}/></label><label>Complemento<input value={complement} onChange={e=>setComplement(e.target.value)}/></label></div><label>Bairro<input value={neighborhood} onChange={e=>setNeighborhood(e.target.value)}/></label><div className="two"><label>Cidade<input value={city} onChange={e=>setCity(e.target.value)}/></label><label>Estado<select value={state} onChange={e=>setState(e.target.value)}><option value="">Selecione</option>{statesBR.map(st=><option key={st} value={st}>{st}</option>)}</select></label></div><p className="hint">Envio de documento com foto e troca de senha serão disponibilizados após a validação do fluxo de segurança.</p><button className="primary" type="submit" disabled={loading||!profileLoaded}>Salvar meus dados</button></form>}
-{isAdmin&&['Gestão de contas','Indicadores administrativos','Configurações administrativas'].includes(tab)&&<AdminPanel section={tab}/>}
+{isAdmin&&['Gestão de contas','Indicadores administrativos','Configurações administrativas'].includes(tab)&&<AdminPanel section={tab}/>}{isAdmin&&tab==='Banco de Dados Elétricos'&&<ElectricalCatalogAdmin/>}
 {checkoutPlan&&session?.user?.id&&<IntegratedCheckout plan={checkoutPlan} userId={session.user.id} isAdmin={isAdmin} onClose={()=>setCheckoutPlan(null)} onActivated={async()=>{await refresh();await loadPaymentHistory()}}/>}{tab==='Assinatura'&&<section className="panel subscription"><div className="ep-sub-header"><Crown size={32}/><div><h2>Assinatura EletriPro</h2><p>Escolha um plano para ter acesso aos recursos Pro. A renovação é manual e a validade começa após a confirmação do pagamento.</p></div></div><div className="ep-sub-status"><span>Assinatura financeira registrada</span><strong>{financialPlan==='pro'?'Pro':financialPlan==='free'?'Free':financialPlan}</strong><p>{planExpires?`Validade registrada: ${adminDate(planExpires)}${new Date(planExpires)<=new Date()?' (vencida)':''}`:'Nenhuma validade registrada.'}</p>{isAdmin&&<p><strong>Modo de utilização do administrador:</strong> {adminAccessMode==='pro_isento'?'Pro Isento — recursos liberados sem cobrança':'Free — bloqueios de teste ativos'}. Este modo não altera o histórico de pagamentos.</p>}</div><div className="ep-sub-grid">{availablePlans.filter(p=>p.active).map(p=><article className="ep-sub-card" key={p.id}><div className="ep-sub-card-info"><h3>{p.name}</h3><strong className="ep-sub-price">{brl(p.price_cents/100)}</strong><p className="ep-sub-duration">{p.billing_months} {p.billing_months===1?'mês':'meses'}</p><div className="ep-sub-divider"/><p className="ep-sub-equivalent">{brl(p.price_cents/100/Math.max(1,p.billing_months))}/mês</p></div><button className="primary" disabled={subscriptionBusy} onClick={()=>void startMercadoPagoCheckout(p.id)}>{subscriptionBusy?'Aguarde...':'Pagar com PIX ou cartão'}</button></article>)}</div>{availablePlans.filter(p=>p.active).length===0&&<p>Nenhum plano disponível. Verifique a configuração do Supabase.</p>}{subscriptionRequests.some(r=>r.status==='pending')&&<p className="hint">Existe uma solicitação de assinatura antiga pendente de análise administrativa. Isso não altera pagamentos já aprovados nem a validade da assinatura.</p>}
 <div className="ep-sub-history"><p className="hint">Registros históricos de teste e cobranças reais são apresentados separadamente. Consultas não geram novas cobranças.</p><div className="ep-sub-history-head"><h3>Histórico de pagamentos</h3><button type="button" className="outline" aria-expanded={historyExpanded} onClick={()=>setHistoryExpanded(v=>!v)}>{historyExpanded?"Minimizar":"Mostrar histórico"}</button><button className="outline" disabled={paymentHistoryBusy} onClick={()=>void (async()=>{await loadPaymentHistory();await refresh()})()}>{paymentHistoryBusy?'Atualizando...':'Atualizar histórico'}</button></div>
 {paymentHistoryError&&<p role="alert">{paymentHistoryError}</p>}{paymentStatusNotice&&<p className="ep-payment-status-notice" role="status">{paymentStatusNotice}</p>}
@@ -2069,13 +2217,13 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
 {historyExpanded&&paymentHistory.length>0&&<div className="ep-sub-history-scroll"><table><thead><tr><th>Data</th><th>Plano</th><th>Valor</th><th>Forma de pagamento</th></tr></thead><tbody>{paymentHistory.map(h=><tr key={h.id}><td>{adminDate(h.created_at)}</td><td>{h.plan_name}</td><td>{brl(h.amount_cents/100)}</td><td>{h.payment_method==='pix'?'PIX':h.payment_method==='credit_card'?'Cartão':h.payment_method}</td></tr>)}</tbody></table></div>}</div><small>Pagamento processado pelo Mercado Pago. O plano Pro será liberado após confirmação do pagamento.</small></section>}
 {clientAreaOpen&&activeClient&&<section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><span className="eyebrow">ÁREA DO CLIENTE</span><h2>{activeClient.name}</h2><p>{activeClient.phone||'Sem telefone'} · {activeClient.email||'Sem e-mail'}</p></div><button className="outline" onClick={()=>navigate('Clientes')}>Voltar aos clientes</button></div><div style={{display:'flex',flexWrap:'wrap',gap:8}}>{(reportMaintenanceMode?['Manutenção','Relatórios']:clientAreaTabs.filter(t=>t!=='Manutenção')).map(t=><button key={t} className={tab===t?'primary':'outline'} onClick={()=>navigate(t)}>{t}</button>)}</div></section>}
 {tab==='Manutenção'&&activeClient&&<MaintenancePanel key={'maintenance-'+activeClientId} client={activeClient} userId={session.user.id} onReport={()=>{setReportMaintenanceMode(true);navigate('Relatórios')}}/>}
-{tab==='Tipo de instalação'&&activeClient&&<><section className="panel"><h3>Fornecimento CELESC — proposta automática</h3><p>{!supplyLoaded?'Calculando após carregar circuitos...':!supplyCircuits.length?'Cadastre ambientes e circuitos para obter o fornecimento.':autoSupply.entry?`${autoSupply.installedKW.toLocaleString('pt-BR',{maximumFractionDigits:2})} kW instalados · ${autoSupply.entry.category} · ${autoSupply.supply==='three'?'Trifásico':autoSupply.supply==='two'?'Bifásico':'Monofásico'} (proposta)`: 'Sem enquadramento automático: confirme tensão 220/380 V, carga e condições da rede.'}</p>{autoSupply.requiresTechnicalReview&&<p role="alert" className="sizing-warning">{autoSupply.reason} O QD e o alimentador ficam bloqueados até a revisão.</p>}<p className="hint">A proposta não comprova disponibilidade da rede, ligação de equipamentos especiais nem aprovação da concessionária. A mudança de fornecimento exige revisar o QD.</p></section><InstallationSetup settings={installationSettings} onChange={updateInstallation} onSave={()=>void saveInstallation()} saving={installationLoading||installationSaving}/>{installationStatus&&installationStatus.startsWith("Erro")&&<p className="hint" role="alert">{installationStatus}</p>}</>}
+{tab==='Tipo de instalação'&&activeClient&&<><section className="panel"><h3>Fornecimento CELESC — proposta automática</h3><p>{!supplyLoaded?'Calculando após carregar circuitos...':!supplyCircuits.length?'Cadastre ambientes e circuitos para obter o fornecimento.':autoSupply.entry?`${autoSupply.installedKW.toLocaleString('pt-BR',{maximumFractionDigits:2})} kW instalados · ${autoSupply.entry.category} · ${autoSupply.supply==='three'?'Trifásico':autoSupply.supply==='two'?'Bifásico':'Monofásico'} (proposta)`: 'Sem enquadramento automático: confira potências ativas, fatores de potência, vínculos dos ambientes e tensão 220/380 V.'}</p>{autoSupply.requiresTechnicalReview&&<p role="alert" className="sizing-warning">{autoSupply.reason} O QD e o alimentador ficam bloqueados até a revisão.</p>}<p className="hint">A proposta não comprova disponibilidade da rede, ligação de equipamentos especiais nem aprovação da concessionária. A mudança de fornecimento exige revisar o QD.</p></section><InstallationSetup settings={installationSettings} onChange={updateInstallation} onSave={()=>void saveInstallation()} saving={installationLoading||installationSaving}/>{installationStatus&&installationStatus.startsWith("Erro")&&<p className="hint" role="alert">{installationStatus}</p>}</>}
 {tab==='Dimensionamento'&&activeClient&&<CircuitSizing key={activeClientId} clientId={activeClientId} userId={session.user.id} settings={effectiveInstallation}/>}
 {false&&tab==='Alimentador geral'&&activeClient&&(supplyReady?<FeederPanel key={'feeder-'+activeClientId+'-'+supplyRevision} clientId={activeClientId!} userId={session.user.id} settings={effectiveInstallation}/>:<section className="panel" role="alert"><h3>Alimentador aguardando enquadramento</h3><p>{!supplyLoaded?'Atualizando circuitos...':autoSupply.reason||'Não há fornecimento CELESC válido para os circuitos e tensões cadastrados. Revise as cargas e as tensões antes de dimensionar.'}</p></section>)}
 {tab==='Quadro de distribuição'&&activeClient&&<><section className="panel ep-supply-overview" aria-label="Fornecimento automático"><h3>Fornecimento sugerido — CELESC</h3><div className="ep-supply-summary"><div><span>Carga instalada</span><strong>{supplyLoaded?autoSupply.installedKW.toLocaleString('pt-BR',{maximumFractionDigits:2})+' kW':'Calculando...'}</strong></div><div><span>Modalidade sugerida</span><strong>{!supplyLoaded?'Calculando...':autoSupply.supply==='single'?'Monofásico':autoSupply.supply==='two'?'Bifásico':autoSupply.supply==='three'?'Trifásico':'Não determinada'}</strong></div><div><span>Categoria indicativa</span><strong>{autoSupply.entry?.category||'—'}</strong></div><div><span>Disjuntor geral indicativo</span><strong>{autoSupply.entry?.breakerIEC?autoSupply.entry.breakerIEC+' A':'—'}</strong></div></div><p className="hint">Estimativa por carga instalada conforme referência CELESC N-321.0001 (dezembro/2025), para rede 220/380 V. Quando a tensão não foi informada, 220/380 V é uma hipótese de consulta, não confirmação da rede disponível. O enquadramento final depende da concessionária, das características das cargas e do padrão de entrada.</p>{autoSupply.requiresTechnicalReview&&<p role="alert" className="sizing-warning">{autoSupply.reason}</p>}</section>{supplyLoaded&&!supplyReady&&<section className="panel" role="status"><h3>Fornecimento pendente de enquadramento</h3><p>{autoSupply.reason||'O fornecimento automático não pôde ser confirmado. Confira as tensões e o enquadramento em Tipo de instalação. Os circuitos continuam disponíveis para consulta.'}</p></section>}<DistributionPanel key={activeClientId+'-'+supplyRevision} clientId={activeClientId!} userId={session.user.id} settings={effectiveInstallation}/></>}
 {tab==='Ambientes'&&activeClient&&<Environments key={activeClientId} clientId={activeClientId!} userId={session.user.id}/>}
 {tab==='Relatórios'&&activeClient&&((supplyReady||reportMaintenanceMode)?<TechnicalReport key={'report-'+activeClientId+'-'+supplyRevision+'-'+(reportMaintenanceMode?'maintenance':'project')} client={activeClient} userId={session.user.id} professional={professional} logo={logo} accent={accent} settings={effectiveInstallation} maintenanceMode={reportMaintenanceMode}/>:<section className="panel" role="alert">Relatório técnico bloqueado: fornecimento automático não validado. {autoSupply.reason}</section>)}
-{tab==='Materiais'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems} client={activeClient} professional={professional} logo={logo} accent={accent}/></div>}
+{tab==='Materiais'&&activeClient&&<div className="ep-material-budget-layout"><MaterialsPanel key={'materials-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems} client={activeClient} professional={professional} logo={logo} accent={accent} settings={effectiveInstallation}/></div>}
 {tab==='Orçamento'&&activeClient&&<BudgetsPanel key={'budget-'+activeClientId} clientId={activeClientId!} userId={session.user.id} localBudget={budgetItems} client={activeClient} professional={professional} logo={logo} accent={accent}/>}
 {workflowClient&&<div className="ep-modal-backdrop" role="presentation" onMouseDown={e=>{if(e.target===e.currentTarget&&!workflowBusy)setWorkflowClient(null)}}>
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Situação do cliente">
@@ -2088,6 +2236,6 @@ return <div className="app" style={{'--accent':accent} as React.CSSProperties}><
  <section className="ep-workflow-dialog" role="dialog" aria-modal="true" aria-label="Ganhos por mês"><div className="ep-workflow-head"><h2>Ganhos por mês</h2><button className="outline" onClick={()=>setShowEarnings(false)} aria-label="Fechar"><X size={18}/></button></div>
  {monthlyEarnings.length?monthlyEarnings.map(([month,total])=><div className="ep-month-row" key={month}><span>{monthLabel(month+'-01')}</span><strong>{brl(total)}</strong></div>):<p>Nenhum serviço finalizado com orçamento registrado.</p>}
  <div className="ep-total-highlight"><span>Total acumulado</span><strong>{brl(earningsTotal)}</strong></div><button className="outline" onClick={()=>setShowEarnings(false)}>Fechar</button></section></div>}
- {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais','Orçamento','Relatórios','Gestão de contas','Indicadores administrativos','Configurações administrativas'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
+ {!['Painel','Clientes','Personalização','Meu Perfil','Assinatura','Tipo de instalação','Dimensionamento','Ambientes','Quadro de distribuição','Materiais','Orçamento','Relatórios','Gestão de contas','Indicadores administrativos','Configurações administrativas','Banco de Dados Elétricos'].includes(tab)&&<section className="panel empty"><div className="feature-icon">{React.createElement(title(tab),{size:30})}</div><h2>{tab}</h2><p>Módulo em desenvolvimento. Os cálculos elétricos serão liberados somente após validação técnica dos critérios aplicáveis da NBR 5410.</p>{tab==='Dimensionamento'&&<span className="plan-chip">Acesso Free limitado</span>}</section>}
 </main><footer>EletriPro · Interface v0.7.37 · Dados de demonstração identificados</footer></div></div>}
 createRoot(document.getElementById('root')!).render(<App/>);
