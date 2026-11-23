@@ -1,6 +1,6 @@
 // EletriPro: exportação PDF local, sem serviços externos nem janela de impressão.
 export type ReportSection={title:string;headers:string[];rows:(string|number|null|undefined)[][];kind?:'materials'|'normal'};
-export type ReportDocument={company:string;logo?:string;accent?:string;client:string;phone?:string;email?:string;sections:ReportSection[];total?:string};
+export type ReportDocument={title?:string;company:string;logo?:string;accent?:string;client:string;phone?:string;email?:string;sections:ReportSection[];total?:string};
 const txt=(v:unknown)=>v===null||v===undefined||v===''?'—':String(v);
 const bytes=(s:string)=>new TextEncoder().encode(s);
 const concat=(parts:Uint8Array[])=>{const size=parts.reduce((n,p)=>n+p.length,0);const result=new Uint8Array(size);let at=0;for(const p of parts){result.set(p,at);at+=p.length}return result};
@@ -15,16 +15,31 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
  const ensure=(height:number)=>{if(y+height>a4.h-bottom)start()};
  const line=(x1:number,y1:number,x2:number,y2:number)=>{ctx.strokeStyle='#ccd2d8';ctx.lineWidth=1;ctx.beginPath();ctx.moveTo(x1,y1);ctx.lineTo(x2,y2);ctx.stroke()};
  const text=(s:unknown,x:number,baseline:number,size=17,bold=false,align:CanvasTextAlign='left')=>{font(size,bold);ctx.fillStyle='#17212e';ctx.textAlign=align;ctx.fillText(txt(s),x,baseline)};
- const wrap=(value:unknown,maxWidth:number,size:number)=>{const s=txt(value);font(size);const lines:string[]=[];for(const paragraph of s.split('\n')){let line='';for(const word of paragraph.split(/\s+/)){const test=line?line+' '+word:word;if(ctx.measureText(test).width<=maxWidth||!line)line=test;else{lines.push(line);line=word}}lines.push(line||' ')}return lines};
+ const wrap=(value:unknown,maxWidth:number,size:number)=>{
+  const s=txt(value);font(size);const lines:string[]=[];
+  const splitWord=(word:string)=>{const parts:string[]=[];let part='';for(const char of word){if(part&&ctx.measureText(part+char).width>maxWidth){parts.push(part);part=char}else part+=char}if(part)parts.push(part);return parts};
+  for(const paragraph of s.split('\n')){let current='';for(const word of paragraph.split(/\s+/)){
+    for(const piece of splitWord(word)){const candidate=current?current+' '+piece:piece;if(current&&ctx.measureText(candidate).width>maxWidth){lines.push(current);current=piece}else current=candidate}
+  }lines.push(current||' ')}return lines;
+ };
  start();
  const logo=await imageFrom(doc.logo||'');
  if(logo){const maxW=112,maxH=92,ratio=Math.min(maxW/logo.width,maxH/logo.height);try{ctx.drawImage(logo,left,top,logo.width*ratio,logo.height*ratio)}catch{/* logo inacessível por CORS */}}
  const headingX=left+(logo?130:0);
- text(doc.company||'EletriPro',headingX,top+34,28,true);text('Relatório técnico de instalação elétrica',headingX,top+65,20);
- y=top+115;ctx.strokeStyle=accent;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+contentW,y);ctx.stroke();y+=36;
- text('Cliente: '+doc.client,left,y,19,true);y+=29;
- text('Telefone: '+txt(doc.phone)+'   |   E-mail: '+txt(doc.email),left,y,16);y+=28;
- text('Emissão: '+new Date().toLocaleDateString('pt-BR'),left,y,16);y+=24;
+ // Títulos e nomes comerciais extensos devem permanecer dentro da página.
+ const headingWidth=left+contentW-headingX;
+ const companyLines=wrap(doc.company||'EletriPro',headingWidth,28);
+ const titleLines=wrap(doc.title||'Relatório técnico de instalação elétrica',headingWidth,20);
+ let headingY=top+34;
+ for(const item of companyLines){text(item,headingX,headingY,28,true);headingY+=34}
+ headingY+=3;
+ for(const item of titleLines){text(item,headingX,headingY,20);headingY+=26}
+ y=Math.max(top+115,headingY+18);ctx.strokeStyle=accent;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+contentW,y);ctx.stroke();y+=36;
+ // Dados do cliente podem ser extensos; nunca desenhar além da margem direita.
+ const detail=(value:string,size:number,bold=false)=>{for(const item of wrap(value,contentW,size)){ensure(size+12);text(item,left,y,size,bold);y+=size+10}};
+ detail('Cliente: '+doc.client,19,true);
+ detail('Telefone: '+txt(doc.phone)+'   |   E-mail: '+txt(doc.email),16);
+ detail('Emissão: '+new Date().toLocaleDateString('pt-BR'),16);
  for(const section of doc.sections){
   ensure(120);y+=46;text(section.title,left,y,23,true);y+=16;ctx.strokeStyle=accent;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+contentW,y);ctx.stroke();y+=22;
   const material=section.kind==='materials';const cols=section.headers.length;
@@ -44,21 +59,28 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
    const values=row.map(txt);
    const fontSize=section.headers.length>=7?13:15;
    const lines=values.map((v,i)=>wrap(v,widths[i]-18,fontSize));
-   const h=Math.max(40,...lines.map(l=>l.length*19+16));
-   if(y+h>a4.h-bottom){start();text(section.title+' (continuação)',left,y+12,18,true);y+=26;header()}
-   let x=left;
-   for(let i=0;i<cols;i++){
-    ctx.strokeStyle='#cbd2da';ctx.strokeRect(x,y,widths[i],h);
-    const recommendation=section.headers[i]?.trim().toLowerCase()==='recomendação técnica';
-    lines[i].forEach((ln,j)=>text(ln,recommendation?x+9:x+widths[i]/2,y+24+j*19,fontSize,false,recommendation?'left':'center'));
-    x+=widths[i];
+   let offset=0;
+   const maxLines=Math.max(1,...lines.map(l=>l.length));
+   while(offset<maxLines){
+    if(y+40>a4.h-bottom){start();text(section.title+' (continuação)',left,y+12,18,true);y+=26;header()}
+    const available=Math.max(1,Math.floor((a4.h-bottom-y-16)/19));
+    const count=Math.min(maxLines-offset,available);
+    const h=Math.max(40,count*19+16);
+    let x=left;
+    for(let i=0;i<cols;i++){
+     ctx.strokeStyle='#cbd2da';ctx.strokeRect(x,y,widths[i],h);
+     const recommendation=section.headers[i]?.trim().toLowerCase()==='recomendação técnica';
+     lines[i].slice(offset,offset+count).forEach((ln,j)=>text(ln,recommendation?x+9:x+widths[i]/2,y+24+j*19,fontSize,false,recommendation?'left':'center'));
+     x+=widths[i];
+    }
+    y+=h;offset+=count;
    }
-   y+=h;
   }
  }
  if(doc.total){ensure(52);y+=29;text('Total: '+doc.total,left+contentW,y,21,true,'right')}
- ensure(115);y+=42;line(left,y,left+contentW,y);y+=23;
- for(const l of wrap('Documento gerado com base nos dados cadastrados na EletriPro. Confira os cálculos e as condições reais de instalação. Não substitui projeto assinado ou ART.',contentW,14)){text(l,left,y,14);y+=19}
+ const disclaimer=wrap('Documento gerado com base nos dados cadastrados na EletriPro. Confira os cálculos e as condições reais de instalação. Não substitui projeto assinado ou ART.',contentW,14);
+ ensure(42+23+disclaimer.length*19);y+=42;line(left,y,left+contentW,y);y+=23;
+ for(const l of disclaimer){text(l,left,y,14);y+=19}
  canvases.forEach((c,i)=>{const cctx=c.getContext('2d')!;cctx.fillStyle='#64748b';cctx.font='14px Arial';cctx.textAlign='right';cctx.fillText(`${i+1} / ${canvases.length}`,a4.w-right,a4.h-35)});
  const images=await Promise.all(canvases.map(async c=>new Uint8Array(await (await fetch(c.toDataURL('image/jpeg',0.88))).arrayBuffer())));
  const objects:Uint8Array[]=[];const add=(s:string|Uint8Array)=>{objects.push(typeof s==='string'?bytes(s):s);return objects.length};
