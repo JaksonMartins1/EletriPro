@@ -782,6 +782,7 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  useEffect(()=>{let live=true;void(async()=>{try{const id=await ensureEletriProject(clientId,userId);if(!supabase)return;const [r,pr]=await Promise.all([supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}),supabase.from('eletripro_projects').select('installation').eq('id',id).single()]);if(r.error)throw r.error;if(pr.error)throw pr.error;if(live){setRows((r.data||[]) as SavedCircuit[]);setProjectId(id);setGroupFactors(normalizeGroupFactors(pr.data?.installation?.demandGroupFactors));setDemandMode(pr.data?.installation?.demandMode==='external_table'?'external_table':pr.data?.installation?.demandMode==='documented'?'documented':'conservative')}}catch(e){if(live)setMessage('Erro ao carregar quadro: '+String(e))}finally{if(live)setLoading(false)}})();return()=>{live=false}},[clientId,userId]);
  const phases=settings.supply==='three'?['A','B','C']:settings.supply==='two'?['A','B']:['A'];
  const optionsFor=(row:SavedCircuit)=>panelChoices(settings,panelPoles(row,settings));
+ const circuitAmps=(row:SavedCircuit)=>{const n=feederCircuitElectrical(row,settings).current;return Number.isFinite(n)&&n>0?n:panelCurrent(row)};
  const connectionFor=(row:SavedCircuit):PanelConnection=>{
   const options=optionsFor(row);const saved=String(row.data.panelConnection||row.data.panelPhase||'A') as PanelConnection;
   return options.includes(saved)?saved:options[0];
@@ -799,33 +800,41 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
   }
   setRows(next);setDistributionVisible(true);if(updated===changes.length)setMessage(updated===1?'Circuito atualizado.':`${updated} circuitos atualizados.`);setBusy(false);
  }
- const sums=Object.fromEntries(phases.map(p=>[p,rows.reduce((n,row)=>n+(connectionFor(row).includes(p)?panelCurrent(row):0),0)])) as Record<string,number>;
+ const sums=Object.fromEntries(phases.map(p=>[p,rows.reduce((n,row)=>n+(connectionFor(row).includes(p)?circuitAmps(row):0),0)])) as Record<string,number>;
  const factorFor=(row:SavedCircuit)=>demandMode==='documented'?groupDemandFactor(row,groupFactors):1;
  const demandSums=phaseCurrents(rows,settings,factorFor);
  const incompleteForDistribution=rows.filter(row=>{
-  const result=(row.data.results||{}) as Record<string,unknown>;
-  const current=Number(result.current),breaker=Number(result.breaker),section=Number(result.selectedSection);
-  const length=Number(row.data.length);
-  return row.data.requiresTechnicalReview===true||!Number.isFinite(current)||current<=0||!Number.isFinite(breaker)||breaker<=0||!Number.isFinite(section)||section<=0||!Number.isFinite(length)||length<=0;
+  const e=feederCircuitElectrical(row,settings);
+  return !Number.isFinite(e.va)||e.va<=0||!Number.isFinite(circuitAmps(row))||circuitAmps(row)<=0||panelPoles(row,settings)>(settings.supply==='three'?3:settings.supply==='two'?2:1);
  });
- const balance=()=>{
-  if(busy||!rows.length)return;
-  if(incompleteForDistribution.length){setDistributionVisible(false);setMessage('Antes de distribuir as fases, conclua o dimensionamento e informe o comprimento dos circuitos: '+incompleteForDistribution.map(c=>c.title).join(', '));return;}
+ const calculateBalance=()=>{
   const loads=Object.fromEntries(phases.map(p=>[p,0])) as Record<string,number>;
   const assigned=new Map<string,PanelConnection>();
-  // Cargas multipolares são mantidas na ligação válida e entram em cada fase envolvida.
-  rows.filter(row=>optionsFor(row).length===1).forEach(row=>{const conn=connectionFor(row);assigned.set(row.id,conn);for(const p of phases)if(conn.includes(p))loads[p]+=panelCurrent(row)*factorFor(row)});
-  rows.filter(row=>optionsFor(row).length>1).sort((a,b)=>panelCurrent(b)*factorFor(b)-panelCurrent(a)*factorFor(a)).forEach(row=>{
-   const choices=optionsFor(row);const choice=[...choices].sort((a,b)=>{
-    const loadA=Math.max(...phases.filter(p=>a.includes(p)).map(p=>loads[p]+panelCurrent(row)*factorFor(row)));
-    const loadB=Math.max(...phases.filter(p=>b.includes(p)).map(p=>loads[p]+panelCurrent(row)*factorFor(row)));
-    return loadA-loadB || phases.filter(p=>a.includes(p)).reduce((sum,p)=>sum+loads[p],0)-phases.filter(p=>b.includes(p)).reduce((sum,p)=>sum+loads[p],0);
-   })[0];assigned.set(row.id,choice);for(const p of phases)if(choice.includes(p))loads[p]+=panelCurrent(row)*factorFor(row);
-  });
-  const changes=rows.filter(row=>assigned.get(row.id)!==connectionFor(row)).map(row=>({id:row.id,connection:assigned.get(row.id)!}));
-  if(!changes.length){setDistributionVisible(true);setMessage('Distribuição revisada; nenhuma alteração necessária.');return}
-  if(window.confirm(`Distribuir automaticamente ${changes.length} circuito(s) pelas fases? As atribuições atuais desses circuitos serão substituídas.`))void persistChanges(changes);
+  const ordered=[...rows].sort((a,b)=>circuitAmps(b)*factorFor(b)-circuitAmps(a)*factorFor(a));
+  for(const row of ordered){
+   const amps=circuitAmps(row)*factorFor(row);
+   const choices=optionsFor(row);
+   const choice=[...choices].sort((a,b)=>{
+    const maxA=Math.max(...phases.map(p=>loads[p]+(a.includes(p)?amps:0)));
+    const maxB=Math.max(...phases.map(p=>loads[p]+(b.includes(p)?amps:0)));
+    return maxA-maxB||a.localeCompare(b);
+   })[0];
+   assigned.set(row.id,choice);
+   for(const p of phases)if(choice.includes(p))loads[p]+=amps;
+  }
+  return rows.filter(row=>assigned.get(row.id)!==connectionFor(row)).map(row=>({id:row.id,connection:assigned.get(row.id)!}));
  };
+ const balance=()=>{
+  if(busy||loading||!rows.length||incompleteForDistribution.length)return;
+  void persistChanges(calculateBalance());
+ };
+ // Reequilibra automaticamente ao abrir o quadro ou mudar a modalidade/cargas.
+ // Persistência só ocorre quando a atribuição calculada é diferente da salva.
+ useEffect(()=>{
+  if(loading||busy||!projectId||!rows.length||incompleteForDistribution.length)return;
+  const changes=calculateBalance();
+  if(changes.length)void persistChanges(changes);
+ },[loading,projectId,settings.supply,rows.length]);
  const numberBR=(n:number)=>n.toLocaleString('pt-BR',{maximumFractionDigits:1});
  const maximumDemandCurrent=Math.max(0,...phases.map(phase=>Number(demandSums[phase])||0));
  // Circuitos criados automaticamente ainda não possuem corrente, seção ou proteção calculadas.
@@ -834,10 +843,10 @@ function DistributionPanel({clientId,userId,settings}:{clientId:string;userId:st
  const generalBreakerCandidate=incompleteCircuits.length===0&&maximumDemandCurrent>0
   ?[10,16,20,25,32,40,50,63,80,100,125,160,200,225,250,315,400,500,630].find(rating=>rating>=maximumDemandCurrent)
   :undefined;
- return <section className="panel"><div className="panel-heading"><h2>Quadro de distribuição</h2>{<button type="button" className="outline" disabled={busy||loading||!rows.length||incompleteForDistribution.length>0} onClick={balance}>Distribuir fases automaticamente</button>}</div>
- {incompleteForDistribution.length>0&&<p role="alert" className="sizing-warning">Balanceamento indisponível: confira os circuitos sem dados elétricos suficientes: {incompleteForDistribution.map(c=>c.title).join(', ')}.</p>}
- <p className="hint">Confira a distribuição por fase. O balanceamento automático depende de confirmação para não alterar ligações físicas já definidas. Circuitos preliminares sem corrente calculada não entram no balanceamento; finalize seu dimensionamento antes de utilizar a distribuição.</p>
- {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:!distributionVisible?<p className="hint">Os circuitos cadastrados serão apresentados automaticamente.</p>:<div className="ep-distribution-list">{[...rows].sort((a,b)=>(Number(b.data.results?.breaker)||0)-(Number(a.data.results?.breaker)||0)||(Number(b.data.power)||0)-(Number(a.data.power)||0)).map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;const poles=panelPoles(row,settings);const choices=optionsFor(row);return <div className="ep-distribution-item ep-panel-circuit" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div className="ep-panel-circuit-info"><strong>{row.title}</strong><small>Fase(s): {connectionFor(row)} · Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · {poles} {poles===1?'polo':'polos'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {panelCurrent(row)?`${numberBR(panelCurrent(row))} A`:'—'}</small></div><label>Fase(s)<select value={connectionFor(row)} disabled={busy||choices.length===1} onChange={e=>void persistChanges([{id:row.id,connection:e.target.value as PanelConnection}])}>{choices.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
+ return <section className="panel"><div className="panel-heading"><h2>Quadro de distribuição</h2>{<button type="button" className="outline" disabled={busy||loading||!rows.length||incompleteForDistribution.length>0} onClick={balance}>Reequilibrar fases</button>}</div>
+ {incompleteForDistribution.length>0&&<p role="alert" className="sizing-warning">Distribuição automática pendente: confira a potência, a tensão ou a compatibilidade de fases dos circuitos: {incompleteForDistribution.map(c=>c.title).join(', ')}.</p>}
+ <p className="hint">As fases são distribuídas automaticamente conforme a modalidade sugerida e as correntes calculadas pelas cargas. Confira a tensão real dos equipamentos antes da execução.</p>
+ {loading?<p>Carregando...</p>:rows.length===0?<p>Nenhum circuito cadastrado.</p>:!distributionVisible?<p className="hint">Os circuitos cadastrados serão apresentados automaticamente.</p>:<div className="ep-distribution-list">{[...rows].sort((a,b)=>(Number(b.data.results?.breaker)||0)-(Number(a.data.results?.breaker)||0)||(Number(b.data.power)||0)-(Number(a.data.power)||0)).map((row,i)=>{const result=(row.data.results||{}) as Record<string,unknown>;const poles=panelPoles(row,settings);const choices=optionsFor(row);return <div className="ep-distribution-item ep-panel-circuit" key={row.id}><span className="ep-record-number">{String(i+1).padStart(2,'0')}</span><div className="ep-panel-circuit-info"><strong>{row.title}</strong><small>Fase(s): {connectionFor(row)} · Disjuntor: {result.breaker?`${result.breaker} A`:'—'} · {poles} {poles===1?'polo':'polos'} · Bitola: {result.selectedSection?`${result.selectedSection} mm²`:'—'} · Ib: {circuitAmps(row)?`${numberBR(circuitAmps(row))} A`:'—'}</small></div><label>Fase(s)<select value={connectionFor(row)} disabled={busy||choices.length===1} onChange={e=>void persistChanges([{id:row.id,connection:e.target.value as PanelConnection}])}>{choices.map(p=><option key={p} value={p}>{p}</option>)}</select></label></div>})}</div>}
  {distributionVisible&&<><h3 className="ep-panel-subtitle">Resumo por fase</h3><div className="ep-summary-grid">{phases.map(p=><div key={p}><span>Corrente instalada — fase {p}</span><strong>{numberBR(sums[p])} A</strong><small>Corrente demandada: {numberBR(demandSums[p])} A</small></div>)}</div>
  <div className="ep-general-breaker"><strong>Disjuntor geral — pré-seleção por demanda</strong><p>{incompleteCircuits.length>0?'Pré-seleção bloqueada: existem circuitos sem dimensionamento validado':generalBreakerCandidate?`${generalBreakerCandidate} A`:'Demanda acima da faixa de pré-seleção'} · Corrente de demanda máxima por fase: {numberBR(maximumDemandCurrent)} A</p>{incompleteCircuits.length>0&&<p role="status" className="hint">Dimensione os circuitos pendentes antes de avaliar o disjuntor geral: {incompleteCircuits.map(c=>c.title).join(', ')}. A corrente mostrada acima é parcial e não representa a demanda total.</p>}<small>Valor preliminar. A escolha definitiva depende da capacidade de condução do alimentador, curto-circuito, método de instalação, coordenação e exigências da concessionária.</small></div>
  <p className="hint">Corrente demandada considera os fatores técnicos registrados no projeto. Sem justificativa de redução, todos os fatores permanecem em 100%. Circuitos bipolares contribuem com correntes de retorno opostas e circuitos tripolares são considerados equilibrados. A soma fasorial considera o FP cadastrado. A quantidade de polos é estimada pela configuração da instalação e não substitui a verificação da ligação real. Não dimensiona barramentos, DR, DPS ou curto-circuito.</p></>}{message&&<p role="status">{message}</p>}</section>;
