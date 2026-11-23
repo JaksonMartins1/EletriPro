@@ -359,3 +359,9 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 
 /* Tela neutra durante restauração de sessão, sem mensagem de carregamento */
 .ep-auth-wait{min-height:100vh;background:var(--bg,#0e1118)}
+
+.ep-supply-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:14px 0}
+.ep-supply-summary>div{border:1px solid rgba(140,150,170,.22);border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:7px}
+.ep-supply-summary span{font-size:12px;opacity:.75}
+.ep-supply-summary strong{font-size:clamp(16px,2vw,22px)}
+@media(max-width:700px){.ep-supply-summary{grid-template-columns:1fr}}
