@@ -247,7 +247,7 @@ function previewRoomSizing(kind:string,va:number,length:number,settings:Installa
  for(const [sizeStr,iz0] of Object.entries(ampacity5410[settings.conductorInsulation][settings.conductorMaterial][settings.method]['2'])){
   const size=Number(sizeStr);if(size<minSize)continue;
   const iz=Number(iz0)*group*temp;const drop=2*rhoOperating*length*current*pf/size/voltage*100;
-  const minBreaker=kind==='lighting'?10:kind==='tug'&&size===2.5&&kitchen?20:(kind==='tug'||kind==='tue')&&size===2.5?16:kind==='tug'?16:6;
+  const minBreaker=kind==='lighting'?10:kind==='tug'&&kitchen?20:(kind==='tug'||kind==='tue')?16:6;
   const breaker=breakerRatings.find(x=>x>=minBreaker&&x>=current-1e-9&&x<=iz+1e-9);
   if(iz>=current&&breaker!==undefined)return {current,selectedSection:size,corrected:iz,drop:drop*voltage/100,pct:drop,breaker,curve:kind==='lighting'||kind==='tug'?'C':/chuveiro|torneira el[eé]trica|aquecedor resistivo|resist[eê]ncia/i.test(title)?'B':null};
  }
@@ -485,7 +485,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  // Lista de correntes nominais para o estudo; não garante disponibilidade comercial.
  const breakerRatings=[6,10,16,20,25,32,40,50,63,80,100,125];
  const kitchenLaundry=environmentOptions.some(r=>loadLinks.some(l=>l.environmentId===r.id)&&/cozinha|lavanderia|área de serviço/i.test(r.title+' '+String(r.data.kind||'')))||/cozinha|lavanderia|área de serviço/i.test(circuitTitle);
- const minBreaker=(size:number)=>circuit==='lighting'?10:circuit==='tug'&&size===2.5&&kitchenLaundry?20:(circuit==='tug'||circuit==='tue')&&size===2.5?16:circuit==='tug'?16:6;
+ const minBreaker=(_size:number)=>circuit==='lighting'?10:circuit==='tug'&&kitchenLaundry?20:(circuit==='tug'||circuit==='tue')?16:6;
  // Integração: testar cada seção comercial em ordem crescente, exigindo capacidade,
  // queda de tensão e um In que satisfaça Ib ≤ In ≤ Iz.
  const coordinated=candidates.map(x=>({
