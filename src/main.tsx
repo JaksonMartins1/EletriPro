@@ -108,18 +108,22 @@ function estimateRoom(room:SavedEnvironment){
  const tug=outlets===null?null:['Cozinha','Lavanderia'].includes(kind)?Math.min(outlets,3)*600+Math.max(0,outlets-3)*100:kind==='Banheiro'?600:outlets*100;
  return {area,perimeter,lighting,tug,outlets};
 }
-type CircuitLoadLink={environmentId:string;kind:RoomLoadKind};
+type SpecialCircuit={name:string;power:string};
+const roomSpecials=(d:Record<string,unknown>):SpecialCircuit[]=>Array.isArray(d.specialCircuits)?(d.specialCircuits as unknown[]).filter(x=>x&&typeof x==='object').map(x=>({name:String((x as Record<string,unknown>).name||''),power:String((x as Record<string,unknown>).power??'')})):(String(d.specialName||'').trim()?[{name:String(d.specialName),power:String(d.specialPower??'')}]:[]);
+type CircuitLoadLink={environmentId:string;kind:RoomLoadKind;specialIndex?:number};
+const loadKey=(link:CircuitLoadLink)=>`${link.environmentId}:${link.kind}${link.kind==='tue'?':'+(link.specialIndex??0):''}`;
+const roomLoadPower=(room:SavedEnvironment,link:CircuitLoadLink)=>link.kind==='tue'?Number(roomSpecials(room.data||{})[link.specialIndex??0]?.power):estimateRoom(room)?.[link.kind];
 function linkedLoads(links:CircuitLoadLink[],rooms:SavedEnvironment[]){
  const missing:string[]=[];let va=0;
  for(const link of links){const room=rooms.find(r=>r.id===link.environmentId);if(!room){missing.push(link.environmentId);continue}
- const result=estimateRoom(room);const value=link.kind==='tue'?(Number(room.data?.specialPower)>0?Number(room.data?.specialPower):null):result?.[link.kind];if(value===null||value===undefined){missing.push(room.title);continue}va+=value;}
+ const value=roomLoadPower(room,link);if(value===null||value===undefined){missing.push(room.title);continue}va+=value;}
  return {va,missing};
 }
 function Environments({clientId,userId}:{clientId:string;userId:string}){
  const [surveyMode,setSurveyMode]=useState<'unset'|'design'|'existing'>(()=>{const v=localStorage.getItem('ep_room_mode_'+clientId);return v==='design'||v==='existing'?v:'unset'});
  const [outletCount,setOutletCount]=useState('');
- const [specialName,setSpecialName]=useState('');
- const [specialPower,setSpecialPower]=useState('');
+ const [hasSpecial,setHasSpecial]=useState(false);
+ const [specialCircuits,setSpecialCircuits]=useState<SpecialCircuit[]>([]);
  const existingMode=surveyMode==='existing';
  const chooseMode=(v:'design'|'existing')=>{setSurveyMode(v);localStorage.setItem('ep_room_mode_'+clientId,v);};
  const [rows,setRows]=useState<SavedEnvironment[]>([]);
@@ -142,13 +146,13 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
  const l=length.trim()?parseDimension(length):NaN;
  const dimensionsValid=Number.isFinite(w)&&w>0&&Number.isFinite(l)&&l>0;
  const area=dimensionsValid?w*l:null;
- const reset=()=>{setViewMode(false);setEditorOpen(false);setSelectedId(null);setTitle('');setKind('Sala');setWidth('');setLength('');setNotes('');setOutletCount('');setSpecialName('');setSpecialPower('');setStatus('Novo ambiente.');};
+ const reset=()=>{setViewMode(false);setEditorOpen(false);setSelectedId(null);setTitle('');setKind('Sala');setWidth('');setLength('');setNotes('');setOutletCount('');setHasSpecial(false);setSpecialCircuits([]);setStatus('Novo ambiente.');};
  const selectRow=(row:SavedEnvironment)=>{
   const d=row.data||{};
   setEditorOpen(true);setViewMode(true);setSelectedId(row.id);setTitle(row.title);
   setKind(typeof d.kind==='string'?d.kind:'Outro');
   setWidth(d.width===undefined?'':String(d.width));setLength(d.length===undefined?'':String(d.length));
-  setNotes(typeof d.notes==='string'?d.notes:'');setOutletCount(d.outletCount===undefined?'':String(d.outletCount));setSpecialName(String(d.specialName||''));setSpecialPower(d.specialPower===undefined?'':String(d.specialPower));setStatus('Ambiente carregado.');
+  setNotes(typeof d.notes==='string'?d.notes:'');setOutletCount(d.outletCount===undefined?'':String(d.outletCount));const specials=roomSpecials(d);setHasSpecial(specials.length>0);setSpecialCircuits(specials);setStatus('Ambiente carregado.');
  };
  useEffect(()=>{
   const id=++request.current;
@@ -173,9 +177,9 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
   if(!title.trim()){setStatus('Informe o nome do ambiente.');return;}
   if(!existingMode&&!dimensionsValid){setStatus('Informe comprimento e largura maiores que zero.');return;}
   if(existingMode&&(!Number.isInteger(Number(outletCount))||Number(outletCount)<0||outletCount.trim()==='')){setStatus('Informe a quantidade de tomadas de uso geral.');return;}
-  if((specialName.trim()&&!(Number(specialPower)>0))||(!specialName.trim()&&specialPower.trim())){setStatus('Informe nome e potência positiva do circuito específico, ou deixe ambos vazios.');return;}
+  if(hasSpecial&&(!specialCircuits.length||specialCircuits.some(c=>!c.name.trim()||!(Number(c.power)>0)))){setStatus('Preencha o nome e a potência positiva de todos os circuitos específicos.');return;}
   setBusy(true);setStatus('');
-  const data={kind,width:existingMode?null:w,length:existingMode?null:l,notes:notes.trim(),area:existingMode?null:Math.round(w*l*100)/100,surveyMode,outletCount:existingMode?Number(outletCount):null,specialName:specialName.trim(),specialPower:specialName.trim()?Number(specialPower):null};
+  const data={kind,width:existingMode?null:w,length:existingMode?null:l,notes:notes.trim(),area:existingMode?null:Math.round(w*l*100)/100,surveyMode,outletCount:existingMode?Number(outletCount):null,specialCircuits:hasSpecial?specialCircuits.map(c=>({name:c.name.trim(),power:Number(c.power)})):[],specialName:hasSpecial?specialCircuits[0]?.name.trim()||'':'',specialPower:hasSpecial?Number(specialCircuits[0]?.power)||null:null};
   const result=selectedId
    ?await supabase.from('eletripro_environments').update({title:title.trim(),data,updated_at:new Date().toISOString()}).eq('id',selectedId).eq('project_id',projectId).select('id,title,data').single()
    :await supabase.from('eletripro_environments').insert({project_id:projectId,title:title.trim(),data}).select('id,title,data').single();
@@ -212,7 +216,10 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
    <label>Tipo de ambiente<select value={kind} onChange={e=>setKind(e.target.value)}>{environmentTypes.map(t=><option key={t} value={t}>{t}</option>)}</select></label>
    {!existingMode&&<div className="two"><label>Largura (m)<input type="number" min="0.01" step="any" value={width} onChange={e=>setWidth(e.target.value)} placeholder="Ex.: 3,5"/></label><label>Comprimento (m)<input type="number" min="0.01" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 4"/></label></div>}
    {existingMode&&<label>Quantidade de tomadas de uso geral (TUG)<input type="number" min="0" step="1" value={outletCount} onChange={e=>setOutletCount(e.target.value)}/></label>}
-   <div className="two"><label>Nome do circuito de uso específico (opcional)<input value={specialName} onChange={e=>setSpecialName(e.target.value)} placeholder="Ex.: Chuveiro"/></label><label>Potência do circuito específico (VA)<input type="number" min="0" step="any" value={specialPower} onChange={e=>setSpecialPower(e.target.value)} placeholder="Ex.: 5500"/></label></div>
+   <div className="ep-special-entry"><strong>Este ambiente possui circuito de uso específico (TUE)?</strong><div className="ep-special-buttons"><button type="button" className={hasSpecial?'primary':'outline'} aria-pressed={hasSpecial} onClick={()=>{setHasSpecial(true);setSpecialCircuits(old=>old.length?old:[{name:'',power:''}])}}>Sim</button><button type="button" className={!hasSpecial?'primary':'outline'} aria-pressed={!hasSpecial} onClick={()=>setHasSpecial(false)}>Não</button></div>
+   {hasSpecial&&<><strong>Quantos circuitos específicos existem?</strong><div className="ep-special-count"><button type="button" className="outline" aria-label="Diminuir quantidade de circuitos específicos" disabled={specialCircuits.length<=1} onClick={()=>setSpecialCircuits(old=>old.slice(0,-1))}>−</button><output aria-live="polite">{specialCircuits.length}</output><button type="button" className="outline" aria-label="Aumentar quantidade de circuitos específicos" disabled={specialCircuits.length>=30} onClick={()=>setSpecialCircuits(old=>[...old,{name:'',power:''}])}>+</button></div>
+   {specialCircuits.map((item,index)=><div className="ep-special-item" key={index}><strong>Circuito específico {index+1}</strong><div className="two"><label>Equipamento / nome<input value={item.name} onChange={e=>setSpecialCircuits(old=>old.map((x,i)=>i===index?{...x,name:e.target.value}:x))} placeholder="Ex.: Chuveiro"/></label><label>Potência aparente (VA)<input type="number" min="0" step="any" value={item.power} onChange={e=>setSpecialCircuits(old=>old.map((x,i)=>i===index?{...x,power:e.target.value}:x))} placeholder="Ex.: 5500"/></label></div></div>)}</>}
+   </div>
    {!existingMode&&<div className="sizing-metric"><span>Área calculada</span><strong>{area===null?'—':area.toLocaleString('pt-BR',{maximumFractionDigits:2})+' m²'}</strong></div>}
    <label>Observações (opcional)<textarea rows={3} maxLength={2000} value={notes} onChange={e=>setNotes(e.target.value)} placeholder="Informações do ambiente"/></label>
    <div style={{display:'flex',gap:8,flexWrap:'wrap'}}><button type="button" className="primary" disabled={loading||busy||!projectId||!title.trim()||(!existingMode&&!dimensionsValid)||(existingMode&&outletCount.trim()==='')} onClick={()=>void save()}>{busy?'Aguarde...':selectedId?'Atualizar ambiente':'Salvar ambiente'}</button>{selectedId&&<button type="button" className="outline" disabled={busy} onClick={()=>void remove()}>Excluir ambiente</button>}</div>
@@ -265,20 +272,24 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   },[clientId,userId]);
   async function generateRoomCircuitDrafts(){
     if(!supabase||circuitBusy||circuitLoading)return;
-    const existing=new Set(savedCircuits.flatMap(row=>row.data?.loadMode==='rooms'&&Array.isArray(row.data.loadLinks)?(row.data.loadLinks as CircuitLoadLink[]).map(link=>`${link.environmentId}:${link.kind}`):[]));
+    const existing=new Set(savedCircuits.flatMap(row=>row.data?.loadMode==='rooms'&&Array.isArray(row.data.loadLinks)?(row.data.loadLinks as CircuitLoadLink[]).map(loadKey):[]));
     const drafts:{title:string;data:Record<string,unknown>}[]=[];
     const missing:string[]=[];
     for(const room of environmentOptions){
       const estimate=estimateRoom(room);
       for(const kind of ['lighting','tug','tue'] as RoomLoadKind[]){
-        if(existing.has(`${room.id}:${kind}`))continue;
-        const va=kind==='tue'?Number(room.data?.specialPower):estimate?.[kind];
+        const specials=kind==='tue'?roomSpecials(room.data||{}):[null];
+        for(const [index,special] of specials.entries()){
+        const link:CircuitLoadLink={environmentId:room.id,kind,...(kind==='tue'?{specialIndex:index}:{})};
+        if(existing.has(loadKey(link)))continue;
+        const va=kind==='tue'?Number(special?.power):estimate?.[kind];
         if(!(typeof va==='number'&&Number.isFinite(va)&&va>0)){
-          if(kind==='tue'&&String(room.data?.specialName||'').trim())missing.push(room.title+' (TUE sem potência válida)');
+          if(kind==='tue')missing.push(room.title+' ('+(special?.name||'TUE')+' sem potência válida)');
           continue;
         }
-        const title=kind==='lighting'?`Iluminação — ${room.title}`:kind==='tug'?`TUG — ${room.title}`:`${String(room.data?.specialName||'TUE')} — ${room.title}`;
-        drafts.push({title,data:{circuit:kind,environmentId:room.id,loadMode:'rooms',loadLinks:[{environmentId:room.id,kind}],power:'',manualPower:'',powerVA:va,pf:settings.powerFactor,length:'',material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
+        const title=kind==='lighting'?`Iluminação — ${room.title}`:kind==='tug'?`TUG — ${room.title}`:`${special?.name||'TUE'} — ${room.title}`;
+        drafts.push({title,data:{circuit:kind,environmentId:room.id,loadMode:'rooms',loadLinks:[link],power:'',manualPower:'',powerVA:va,pf:settings.powerFactor,length:'',material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
+        }
       }
     }
     if(!drafts.length){setCircuitStatus(missing.length?'Revise as cargas: '+missing.join(', '):'Nenhuma carga nova disponível.');return}
@@ -445,7 +456,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  <label>Tipo de circuito<select value={circuit} onChange={e=>{const next=e.target.value;setCircuit(next);setLoadLinks(old=>old.filter(link=>link.kind===next));if(loadMode==='rooms'&&!['lighting','tug','tue'].includes(next))setLoadMode('manual')}}><option value="lighting">Iluminação</option><option value="tug">Tomadas de uso geral</option><option value="tue">Circuito dedicado / TUE</option><option value="motor">Motor / máquina</option><option value="feeder">Alimentador</option><option value="other">Outro</option></select></label>
  <div className="ep-load-links"><h3>Origem da carga</h3><label>Potência do circuito<select value={loadMode} onChange={e=>{setLoadMode(e.target.value as 'manual'|'rooms');setLoadLinks(old=>old.filter(link=>link.kind===circuit))}}><option value="manual">Informar potência manualmente</option><option value="rooms" disabled={!['lighting','tug','tue'].includes(circuit)}>Somar cargas dos ambientes</option></select></label>
  {loadMode==='rooms'&&<><p className="hint">{circuit==='lighting'?'Selecione somente cargas de iluminação.':'Selecione somente as cargas do tipo escolhido.'} Cada carga pode pertencer a apenas um circuito.</p>
- {environmentOptions.map(room=>{const estimate=estimateRoom(room);return <div className="ep-room-pick" key={room.id}><strong>{room.title}</strong>{([circuit] as RoomLoadKind[]).filter(kind=>kind==='lighting'||kind==='tug'||kind==='tue').map(kind=>{const va=kind==='tue'?(Number(room.data?.specialPower)>0?Number(room.data.specialPower):null):estimate?.[kind];const selected=loadLinks.some(x=>x.environmentId===room.id&&x.kind===kind);return <label key={kind}><input type="checkbox" disabled={va===null||va===undefined||savedCircuits.some(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)&&(x.data.loadLinks as CircuitLoadLink[]).some(y=>y.environmentId===room.id&&y.kind===kind))} checked={selected} onChange={e=>setLoadLinks(old=>e.target.checked?[...old,{environmentId:room.id,kind}]:old.filter(x=>!(x.environmentId===room.id&&x.kind===kind)))}/>{kind==='lighting'?'Iluminação':kind==='tue'?String(room.data?.specialName||'Uso específico'):'Tomadas'} — {va===null||va===undefined?'Revisão manual':`${va} VA`}{savedCircuits.some(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)&&(x.data.loadLinks as CircuitLoadLink[]).some(y=>y.environmentId===room.id&&y.kind===kind))?' · Já vinculada a outro circuito':''}</label>})}</div>})}
+ {environmentOptions.map(room=>{const estimate=estimateRoom(room);const specials=circuit==='tue'?roomSpecials(room.data||{}):[null];return <div className="ep-room-pick" key={room.id}><strong>{room.title}</strong>{specials.map((special,index)=>{const kind=circuit as RoomLoadKind;const link:CircuitLoadLink={environmentId:room.id,kind,...(kind==='tue'?{specialIndex:index}:{})};const va=kind==='tue'?Number(special?.power):estimate?.[kind];const valid=Number.isFinite(va)&&va>0;const selected=loadLinks.some(x=>loadKey(x)===loadKey(link));const alreadyLinked=savedCircuits.some(x=>x.id!==selectedCircuitId&&x.data?.loadMode==='rooms'&&Array.isArray(x.data.loadLinks)&&(x.data.loadLinks as CircuitLoadLink[]).some(y=>loadKey(y)===loadKey(link)));return <label key={loadKey(link)}><input type="checkbox" disabled={!valid||alreadyLinked} checked={selected} onChange={e=>setLoadLinks(old=>e.target.checked?[...old,link]:old.filter(x=>loadKey(x)!==loadKey(link)))}/>{kind==='lighting'?'Iluminação':kind==='tue'?special?.name||'Uso específico':'Tomadas'} — {!valid?'Revisão manual':`${va} VA`}{alreadyLinked?' · Já vinculada a outro circuito':''}</label>})}</div>})}
  <div className="sizing-metric"><span>Carga total associada</span><strong>{loadLinks.length?`${roomCalculation.va.toLocaleString('pt-BR')} VA`:'—'}</strong></div>
  {roomCalculation.missing.length>0&&<p role="alert" className="sizing-warning">Existem ambientes removidos ou cargas sem estimativa. Revise as associações antes de salvar.</p>}
  <p className="hint">Para o dimensionamento preliminar, P = S × fator de potência geral. As cargas mínimas em VA não são tratadas diretamente como W.</p></>}
