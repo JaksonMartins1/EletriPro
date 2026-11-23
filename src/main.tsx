@@ -227,6 +227,32 @@ function Environments({clientId,userId}:{clientId:string;userId:string}){
   <button type="button" className="outline" onClick={reset} disabled={busy}>Fechar</button></div>}</section></div>}
  </div>;
 }
+// Estimativa geométrica de percurso, NÃO uma medição do trajeto desde o QD.
+// Hipótese transparente: 5 m de alimentação presumida + maior dimensão de cada ambiente atendido.
+function estimateCircuitRoute(links:CircuitLoadLink[],rooms:SavedEnvironment[]){
+ const unique=[...new Set(links.map(x=>x.environmentId))];
+ if(!unique.length)return null;
+ let sum=5;
+ for(const id of unique){const room=rooms.find(x=>x.id===id);if(!room)return null;const w=Number(room.data?.width),l=Number(room.data?.length);if(!(w>0&&l>0))return null;sum+=Math.max(w,l)}
+ return Math.ceil(sum*10)/10;
+}
+function previewRoomSizing(kind:string,va:number,length:number,settings:InstallationSettings,title:string){
+ const voltage=Number(settings.voltage),pf=Number(settings.powerFactor),group=grouping5410[settings.groupMode]?.[settings.groupCount],temp=temperature5410[settings.conductorInsulation]?.[settings.temperature];
+ const supported=Boolean(ampacity5410[settings.conductorInsulation]?.[settings.conductorMaterial]?.[settings.method]?.['2'])&&group!==undefined&&temp!==undefined&&(settings.groupMode==='bundle'||(settings.method==='C'&&settings.groupMode==='singleLayer'))&&settings.supply!=='three';
+ if(!supported||!(va>0&&voltage>0&&pf>0&&pf<=1&&length>0))return null;
+ const current=va/voltage;const minSize=settings.conductorMaterial==='aluminum'?16:kind==='lighting'?1.5:2.5;
+ const rho=settings.conductorMaterial==='copper'?0.0175:0.0282,alpha=settings.conductorMaterial==='copper'?0.00393:0.00403,conductorTemp=settings.conductorInsulation==='PVC 70 °C'?70:90;
+ const rhoOperating=rho*(1+alpha*(conductorTemp-20));const breakerRatings=[6,10,16,20,25,32,40,50,63,80,100,125];
+ const kitchen=/cozinha|lavanderia|área de serviço/i.test(title);
+ for(const [sizeStr,iz0] of Object.entries(ampacity5410[settings.conductorInsulation][settings.conductorMaterial][settings.method]['2'])){
+  const size=Number(sizeStr);if(size<minSize)continue;
+  const iz=Number(iz0)*group*temp;const drop=2*rhoOperating*length*current*pf/size/voltage*100;
+  const minBreaker=kind==='lighting'?10:kind==='tug'&&size===2.5&&kitchen?20:(kind==='tug'||kind==='tue')&&size===2.5?16:kind==='tug'?16:6;
+  const breaker=breakerRatings.find(x=>x>=minBreaker&&x>=current-1e-9&&x<=iz+1e-9);
+  if(iz>=current&&drop<=4&&breaker!==undefined)return {current,selectedSection:size,corrected:iz,drop:drop*voltage/100,pct:drop,breaker,curve:kind==='lighting'||kind==='tug'?'C':/chuveiro|torneira el[eé]trica|aquecedor resistivo|resist[eê]ncia/i.test(title)?'B':null};
+ }
+ return null;
+}
 type SavedCircuit={id:string;title:string;data:Record<string,unknown>};
 function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings;clientId:string;userId:string}){
  const [editorOpen,setEditorOpen]=useState(false);
@@ -238,16 +264,18 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
   const [savedCircuits,setSavedCircuits]=useState<SavedCircuit[]>([]);
   const [selectedCircuitId,setSelectedCircuitId]=useState<string|null>(null);
   const [circuitTitle,setCircuitTitle]=useState('');
+  const [lengthEstimated,setLengthEstimated]=useState(false);
+  const [technicalValidated,setTechnicalValidated]=useState(false);
   const [circuitStatus,setCircuitStatus]=useState('');
   const [circuitBusy,setCircuitBusy]=useState(false);
   const [circuitLoading,setCircuitLoading]=useState(true);
   const circuitRequest=React.useRef(0);
   useEffect(()=>{if(!selectedCircuitId)return;const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!circuitBusy)clearCircuit()};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[selectedCircuitId,circuitBusy]);
-  const clearCircuit=()=>{setViewMode(false);setEditorOpen(false);setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf(settings.powerFactor);setLength('');setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount(settings.groupCount);setEnvironmentId('');setLoadLinks([]);setLoadMode('manual');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
+  const clearCircuit=()=>{setViewMode(false);setEditorOpen(false);setSelectedCircuitId(null);setCircuitTitle('');setCircuit('tug');setPower('');setPf(settings.powerFactor);setLength('');setLengthEstimated(false);setTechnicalValidated(false);setMaterial('copper');setWiring('phase-neutral');setInsulation('PVC 70 °C');setGroupCount(settings.groupCount);setEnvironmentId('');setLoadLinks([]);setLoadMode('manual');setCircuitStatus('Novo circuito: preencha os dados e clique em Salvar circuito.');};
   const selectSavedCircuit=(row:SavedCircuit)=>{
     const d=row.data||{};
     const val=(key:string,fallback:string)=>typeof d[key]==='string'?String(d[key]):fallback;
-    setEditorOpen(true);setViewMode(true);setEnvironmentId(val('environmentId',''));setLoadLinks(Array.isArray(d.loadLinks)?(d.loadLinks as CircuitLoadLink[]):[]);setLoadMode(d.loadMode==='rooms'?'rooms':'manual');setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit',Array.isArray(d.loadLinks)&&d.loadLinks.some((x:CircuitLoadLink)=>x.kind==='lighting')?'lighting':'tug'));setPower(val('power',''));setPf(settings.powerFactor);setLength(val('length',''));setMaterial(settings.conductorMaterial);setWiring(settings.wiring);setInsulation(settings.conductorInsulation);setGroupCount(val('groupCount',settings.groupCount));setCircuitStatus('Circuito carregado.');
+    setEditorOpen(true);setViewMode(true);setEnvironmentId(val('environmentId',''));setLoadLinks(Array.isArray(d.loadLinks)?(d.loadLinks as CircuitLoadLink[]):[]);setLoadMode(d.loadMode==='rooms'?'rooms':'manual');setSelectedCircuitId(row.id);setCircuitTitle(row.title);setCircuit(val('circuit',Array.isArray(d.loadLinks)&&d.loadLinks.some((x:CircuitLoadLink)=>x.kind==='lighting')?'lighting':'tug'));setPower(val('power',''));setPf(settings.powerFactor);setLength(val('length',''));setLengthEstimated(d.lengthEstimated===true);setTechnicalValidated(d.requiresTechnicalReview!==true);setMaterial(settings.conductorMaterial);setWiring(settings.wiring);setInsulation(settings.conductorInsulation);setGroupCount(val('groupCount',settings.groupCount));setCircuitStatus('Circuito carregado.');
   };
   useEffect(()=>{
     const request=++circuitRequest.current;
@@ -275,9 +303,27 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     const existing=new Set(savedCircuits.flatMap(row=>row.data?.loadMode==='rooms'&&Array.isArray(row.data.loadLinks)?(row.data.loadLinks as CircuitLoadLink[]).map(loadKey):[]));
     const drafts:{title:string;data:Record<string,unknown>}[]=[];
     const missing:string[]=[];
+    // Iluminação geral: consolidar todos os ambientes em um único circuito.
+    // Não gerar outro circuito se já existir um circuito de iluminação no projeto.
+    const lightingAlreadyExists=savedCircuits.some(row=>row.data?.circuit==='lighting'||row.title.toLocaleLowerCase('pt-BR').startsWith('iluminação'));
+    if(!lightingAlreadyExists){
+      const lightingLinks:CircuitLoadLink[]=[];
+      let lightingVA=0;
+      for(const room of environmentOptions){
+        const value=estimateRoom(room)?.lighting;
+        if(typeof value==='number'&&Number.isFinite(value)&&value>0){
+          lightingLinks.push({environmentId:room.id,kind:'lighting'});
+          lightingVA+=value;
+        }
+      }
+      if(lightingLinks.length){
+        const estimatedLength=estimateCircuitRoute(lightingLinks,environmentOptions);const preliminary=estimatedLength?previewRoomSizing('lighting',lightingVA,estimatedLength,settings,'Iluminação Geral'):null;
+        drafts.push({title:'Iluminação Geral',data:{circuit:'lighting',environmentId:lightingLinks[0].environmentId,loadMode:'rooms',loadLinks:lightingLinks,power:'',manualPower:'',powerVA:lightingVA,pf:settings.powerFactor,length:estimatedLength?String(estimatedLength):'',lengthEstimated:estimatedLength!==null,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:preliminary||{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
+      }
+    }
     for(const room of environmentOptions){
       const estimate=estimateRoom(room);
-      for(const kind of ['lighting','tug','tue'] as RoomLoadKind[]){
+      for(const kind of ['tug','tue'] as RoomLoadKind[]){
         const specials=kind==='tue'?roomSpecials(room.data||{}):[null];
         for(const [index,special] of specials.entries()){
         const link:CircuitLoadLink={environmentId:room.id,kind,...(kind==='tue'?{specialIndex:index}:{})};
@@ -288,12 +334,13 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
           continue;
         }
         const title=kind==='lighting'?`Iluminação — ${room.title}`:kind==='tug'?`TUG — ${room.title}`:`${special?.name||'TUE'} — ${room.title}`;
-        drafts.push({title,data:{circuit:kind,environmentId:room.id,loadMode:'rooms',loadLinks:[link],power:'',manualPower:'',powerVA:va,pf:settings.powerFactor,length:'',material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
+        const estimatedLength=estimateCircuitRoute([link],environmentOptions);const preliminary=estimatedLength?previewRoomSizing(kind,va,estimatedLength,settings,title):null;
+        drafts.push({title,data:{circuit:kind,environmentId:room.id,loadMode:'rooms',loadLinks:[link],power:'',manualPower:'',powerVA:va,pf:settings.powerFactor,length:estimatedLength?String(estimatedLength):'',lengthEstimated:estimatedLength!==null,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount:settings.groupCount,panelPhase:null,panelConnection:null,results:preliminary||{current:null,selectedSection:null,corrected:null,drop:null,pct:null,breaker:null,curve:null},installationSnapshot:settings,requiresTechnicalReview:true}});
         }
       }
     }
     if(!drafts.length){setCircuitStatus(missing.length?'Revise as cargas: '+missing.join(', '):'Nenhuma carga nova disponível.');return}
-    if(!window.confirm(`Criar ${drafts.length} circuitos preliminares? Informe o comprimento e valide cabos e disjuntores em cada circuito antes de utilizá-los.`))return;
+    if(!window.confirm(`Criar ${drafts.length} circuitos com pré-dimensionamento automático? Os comprimentos geométricos são estimativas e devem ser conferidos antes da validação técnica.`))return;
     setCircuitBusy(true);
     try{
       const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
@@ -301,7 +348,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
       const {data,error}=await supabase.from('eletripro_circuits').insert(drafts.map(d=>({...d,project_id:project.id}))).select('id,title,data');
       if(error)throw error;
       setSavedCircuits(old=>[...old,...(data||[]) as SavedCircuit[]]);
-      setCircuitStatus(`${(data||[]).length} circuitos preliminares criados. Abra cada circuito, informe o comprimento e salve para dimensionar.${missing.length?' Pendências: '+missing.join(', '):''}`);
+      setCircuitStatus(`${(data||[]).length} circuitos criados com cálculo preliminar quando possível. Abra cada circuito, confira o percurso estimado, cabo e disjuntor e valide.${missing.length?' Pendências: '+missing.join(', '):''}`);
     }catch(error){setCircuitStatus('Erro ao gerar circuitos: '+(error instanceof Error?error.message:String(error)))}
     finally{setCircuitBusy(false)}
   }
@@ -318,7 +365,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
     setCircuitBusy(true);setCircuitStatus('');
     const {data:project,error:pe}=await supabase.from('eletripro_projects').select('id').eq('client_id',clientId).maybeSingle();
     if(pe||!project){setCircuitStatus(pe?'Erro: '+pe.message:'Salve primeiro o Tipo de instalação.');setCircuitBusy(false);return}
-    const data={circuit,environmentId:environmentId||null,loadMode,loadLinks,power:powerForSizing,manualPower:power,powerVA:loadMode==='rooms'?roomCalculation.va:null,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount,panelPhase:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelPhase||'A'):'A',panelConnection:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelConnection||null):null,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings,requiresTechnicalReview:!Boolean(coordinated)};
+    const data={circuit,environmentId:environmentId||null,loadMode,loadLinks,power:powerForSizing,manualPower:power,powerVA:loadMode==='rooms'?roomCalculation.va:null,pf:settings.powerFactor,length,material:settings.conductorMaterial,wiring:settings.wiring,insulation:settings.conductorInsulation,groupCount,lengthEstimated, panelPhase:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelPhase||'A'):'A',panelConnection:selectedCircuitId?(savedCircuits.find(x=>x.id===selectedCircuitId)?.data.panelConnection||null):null,results:{current,selectedSection,corrected,drop,pct,breaker:breakerCandidate,curve:tripCurve},installationSnapshot:settings,requiresTechnicalReview:!Boolean(coordinated&&technicalValidated)};
     const result=selectedCircuitId
       ?await supabase.from('eletripro_circuits').update({title,data,updated_at:new Date().toISOString()}).eq('id',selectedCircuitId).eq('project_id',project.id).select('id,title,data').single()
       :await supabase.from('eletripro_circuits').insert({project_id:project.id,title,data}).select('id,title,data').single();
@@ -443,7 +490,7 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const fmt=(n:number,d=2)=>n.toLocaleString('pt-BR',{minimumFractionDigits:d,maximumFractionDigits:d});
  const reset=()=>{setPower('');setPf(settings.powerFactor);setLength('');setGroupCount(settings.groupCount)};
  return <><section className="panel" style={{marginBottom:16}}><div className="panel-heading"><div><h2>Circuitos do projeto</h2></div><div className="ep-circuit-heading-actions"><button type="button" className="outline" disabled={circuitBusy||circuitLoading||!environmentOptions.length} onClick={()=>void generateRoomCircuitDrafts()}>Gerar circuitos dos ambientes</button><button type="button" className="outline" disabled={circuitBusy} onClick={()=>{clearCircuit();setViewMode(false);setEditorOpen(true)}}><Plus size={16}/> Novo circuito</button></div></div>
-  {circuitLoading?<p className="hint">Carregando circuitos...</p>:savedCircuits.length===0?<p className="hint">Nenhum circuito salvo neste projeto.</p>:<div className="ep-circuit-list">{savedCircuits.map((x,i)=><button type="button" key={x.id} className="ep-circuit-list-item" onClick={()=>selectSavedCircuit(x)}><span className="ep-circuit-index">{String(i+1).padStart(2,'0')}</span><span>{x.title}{x.data?.requiresTechnicalReview&&<small className="ep-review-label"> · Pendente de dimensionamento</small>}</span><span className="ep-circuit-arrow">›</span></button>)}</div>}
+  {circuitLoading?<p className="hint">Carregando circuitos...</p>:savedCircuits.length===0?<p className="hint">Nenhum circuito salvo neste projeto.</p>:<div className="ep-circuit-list">{savedCircuits.map((x,i)=><button type="button" key={x.id} className="ep-circuit-list-item" onClick={()=>selectSavedCircuit(x)}><span className="ep-circuit-index">{String(i+1).padStart(2,'0')}</span><span>{x.title}{x.data?.requiresTechnicalReview&&<small className="ep-review-label"> · {Number((x.data.results as any)?.selectedSection)>0?'Pré-dimensionado · validar':'Dimensionamento pendente'}</small>}{Number((x.data.results as any)?.selectedSection)>0&&<small className="ep-review-label"> · Cabo {String((x.data.results as any).selectedSection).replace('.',',')} mm² · Disjuntor {(x.data.results as any).breaker} A{x.data.lengthEstimated?' · percurso estimado':''}</small>}</span><span className="ep-circuit-arrow">›</span></button>)}</div>}
   </section>{editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!circuitBusy)clearCircuit()}}><div className="ep-circuit-editor" role="dialog" aria-modal={true} aria-label={selectedCircuitId?'Editar circuito':'Novo circuito'}><div className="ep-editor-heading"><h2>{selectedCircuitId?(viewMode?circuitTitle:'Editar circuito'):'Novo circuito'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" disabled={circuitBusy} onClick={clearCircuit}><X size={20}/></button>}</div>{viewMode&&selectedCircuitId?<section className="panel ep-circuit-details"><div className="ep-summary">
  <div className="ep-summary-grid"><div><span>Seção do condutor</span><strong>{selectedSection===null?'—':`${fmt(selectedSection)} mm²`}</strong></div><div><span>Disjuntor</span><strong>{breakerCandidate===null?'—':`${breakerCandidate} A`}</strong></div></div>
  <p className="hint">{circuit==='tug'&&/ilumina/i.test(circuitTitle)?'Atenção: este circuito está cadastrado como TUG, apesar do nome indicar iluminação. Clique em Editar e corrija o tipo para aplicar seção mínima de 1,5 mm². ':''}</p>
@@ -461,10 +508,10 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  {roomCalculation.missing.length>0&&<p role="alert" className="sizing-warning">Existem ambientes removidos ou cargas sem estimativa. Revise as associações antes de salvar.</p>}
  <p className="hint">Para o dimensionamento preliminar, P = S × fator de potência geral. As cargas mínimas em VA não são tratadas diretamente como W.</p></>}
  </div>
- <h3>Dados elétricos</h3><label>Quantidade de circuitos agrupados<select value={groupCount} onChange={e=>setGroupCount(e.target.value)}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label><div className="two">{loadMode==='manual'&&<label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label>}<label>Comprimento de ida (m)<input type="number" min="0" step="any" value={length} onChange={e=>setLength(e.target.value)} placeholder="Ex.: 15"/></label></div>
- <details className="ep-details"><summary>Parâmetros gerais utilizados</summary><p className="hint">Tensão: {voltage} V · Método: {method} · Temperatura: {temperature} °C · Material: {effectiveMaterial==='copper'?'cobre':'alumínio'}. Altere os padrões em Tipo de instalação.</p></details></section>
- <section className="panel sizing-results"><h2>Seção do condutor</h2><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção do condutor/Bitola</span><strong>{selectedSection===null?'—':`${String(selectedSection).replace('.',',')} mm²`}</strong></div>
- {noCompliantCandidate&&<div className="sizing-warning"><strong>Nenhuma seção aprovada no modelo experimental</strong><p>Não foi encontrada seção que atenda simultaneamente à corrente e ao limite provisório de 4% dentro da base provisória. Não use esse resultado para especificação.</p></div>}
+ <h3>Dados elétricos</h3><label>Quantidade de circuitos agrupados<select value={groupCount} onChange={e=>{setGroupCount(e.target.value);setTechnicalValidated(false)}}>{Object.keys(grouping5410[settings.groupMode]||grouping5410.bundle).map(n=><option key={n} value={n}>{n}</option>)}</select></label><div className="two">{loadMode==='manual'&&<label>Potência ativa (W)<input type="number" min="0" step="any" value={power} onChange={e=>setPower(e.target.value)} placeholder="Ex.: 5400"/></label>}<label>Comprimento de ida (m){lengthEstimated?' — estimado':''}<input type="number" min="0" step="any" value={length} onChange={e=>{setLength(e.target.value);setLengthEstimated(false);setTechnicalValidated(false)}} placeholder="Ex.: 15"/></label></div>
+ {lengthEstimated&&<p className="hint" role="note">Percurso estimado: 5 m de alimentação presumida + maior dimensão de cada ambiente atendido. Não representa distância real do quadro. Ajuste o comprimento após verificar o trajeto.</p>}{loadMode==='rooms'&&<button type="button" className="outline" onClick={()=>{const n=estimateCircuitRoute(loadLinks,environmentOptions);if(n!==null){setLength(String(n));setLengthEstimated(true);setTechnicalValidated(false)}}}>Recalcular comprimento estimado</button>}<details className="ep-details"><summary>Parâmetros gerais utilizados</summary><p className="hint">Tensão: {voltage} V · Método: {method} · Temperatura: {temperature} °C · Material: {effectiveMaterial==='copper'?'cobre':'alumínio'}. Altere os padrões em Tipo de instalação.</p></details></section>
+ <section className="panel sizing-results"><h2>Seção do condutor</h2><p className="hint">Pré-dimensionamento automático: confira percurso real, método de instalação, agrupamento, condições de proteção e capacidade de interrupção antes de validar.</p><div className="sizing-metric"><span>Corrente de projeto (Ib)</span><strong>{current===null?'—':`${fmt(current)} A`}</strong></div><div className="sizing-metric"><span>Seção do condutor/Bitola</span><strong>{selectedSection===null?'—':`${String(selectedSection).replace('.',',')} mm²`}</strong></div>
+ {candidate&&<label className="ep-sizing-validation"><input type="checkbox" checked={technicalValidated} onChange={e=>setTechnicalValidated(e.target.checked)}/> Conferi o percurso, a seção calculada e o disjuntor sugerido para este circuito.</label>}{noCompliantCandidate&&<div className="sizing-warning"><strong>Nenhuma seção aprovada no modelo experimental</strong><p>Não foi encontrada seção que atenda simultaneamente à corrente e ao limite provisório de 4% dentro da base provisória. Não use esse resultado para especificação.</p></div>}
  {current!==null&&!supported&&<div className="sizing-warning"><strong>Condição não contemplada</strong><p>Esta condição não está coberta pelas tabelas e hipóteses implementadas. Não é possível pré-selecionar a seção automaticamente.</p></div>}
  {noBreakerSolution&&<div className="sizing-warning"><strong>Sem combinação preliminar de cabo e disjuntor</strong><p>Há seção que atende à corrente e à queda estimada, mas nenhuma das seções disponíveis permite um disjuntor da lista com Ib ≤ In ≤ Iz. Não selecione um disjuntor acima da capacidade corrigida do condutor.</p></div>}
  {selectedCircuitId&&candidate!==null&&breakerCandidate!==null&&Number.isFinite(l)&&l>0&&<div className="sizing-formula"><strong>Enviar materiais ao cadastro do projeto</strong><p className="hint">Cabos separados por função e cor, com metragem inicial igual ao comprimento de ida para cada condutor. Ajuste cada quantidade e preço em Materiais. Em iluminação, o retorno é estimado com o mesmo comprimento; confirme o percurso real. A seção do PE é preliminar. Não inclui perdas nem reserva técnica.</p><button type="button" className="primary" disabled={materialSending} onClick={()=>void sendSizingMaterials(budgetCableItems({length:l,size:candidate.size,material:effectiveMaterial,insulation:effectiveInsulation,circuit,wiring:effectiveWiring,breaker:breakerCandidate,curve:tripCurve||'a confirmar',poles:effectiveWiring==='phase-neutral'?1:effectiveWiring==='phase-phase'?2:3}))}>{materialSending?'Salvando...':'Consolidar materiais deste circuito'}</button></div>}
