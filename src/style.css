@@ -267,3 +267,26 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 @media(max-width:760px){.ep-calendar-grid{gap:3px}.ep-calendar-day,.ep-calendar-empty{min-height:65px;padding:3px}.ep-calendar-event{padding:4px;font-size:.62rem}.ep-calendar-event span{display:none}.ep-calendar-event b{font-size:.66rem}.ep-calendar-weekday{font-size:.66rem}}
 
 .ep-circuit-heading-actions{display:flex;flex-wrap:wrap;gap:8px;align-items:center}.ep-review-label{display:block;font-size:.75rem;opacity:.7;margin-top:3px}
+
+/* Manutenção: botões de seleção e contadores */
+.maintenance-field{margin:12px 0 18px}.maintenance-field>strong{display:block;margin-bottom:9px}
+.maintenance-choices{display:flex;flex-wrap:wrap;gap:8px}
+.maintenance-choice{border:1px solid var(--border,#cbd5e1);background:transparent;color:inherit;border-radius:10px;padding:11px 15px;cursor:pointer;font:inherit;min-height:44px}
+.maintenance-choice.selected{background:var(--primary,#2563eb);border-color:var(--primary,#2563eb);color:#fff;font-weight:700}
+.maintenance-choice:focus-visible,.maintenance-counter button:focus-visible{outline:3px solid #60a5fa;outline-offset:2px}
+.maintenance-counter-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:10px}
+.maintenance-counter{border:1px solid var(--border,#cbd5e1);border-radius:12px;padding:12px;display:flex;align-items:center;justify-content:space-between;gap:12px}
+.maintenance-counter-actions{display:flex;align-items:center;gap:8px}
+.maintenance-counter-actions button{width:38px;height:38px;border:1px solid var(--border,#cbd5e1);border-radius:9px;background:transparent;color:inherit;font-size:23px;cursor:pointer}
+.maintenance-counter-actions button:disabled{opacity:.35;cursor:not-allowed}
+.maintenance-counter-actions output{min-width:26px;text-align:center;font-weight:700;font-variant-numeric:tabular-nums}
+
+/* Manutenção: tabela de quantidades e preços */
+.maintenance-price-scroll{overflow-x:auto;max-width:100%}
+.maintenance-price-table{width:100%;border-collapse:collapse;min-width:590px}
+.maintenance-price-table th,.maintenance-price-table td{padding:10px 12px;text-align:center;border-bottom:1px solid rgba(128,128,128,.25)}
+.maintenance-price-table td:first-child,.maintenance-price-table thead th:first-child{text-align:left;font-weight:600}
+.maintenance-price-table td input{width:125px;max-width:100%;padding:8px;border-radius:8px}
+.maintenance-price-table .maintenance-counter-actions{justify-content:center}
+.maintenance-price-table tfoot th{font-weight:700}
+.maintenance-price-table tfoot th:first-child{text-align:right}
