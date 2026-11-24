@@ -496,10 +496,10 @@ function CircuitSizing({settings,clientId,userId}:{settings:InstallationSettings
  const effectiveInsulation=settings.conductorInsulation;
  const effectiveGroupCount=settings.groupCount;
  const effectivePf=settings.powerFactor;
+ const effectiveWiring=settings.wiring==='three'?'phase-neutral':settings.wiring;
  const phases=effectiveWiring==='three'?'three':'single';
  const loaded=effectiveWiring==='three'?'3':'2';
  const voltage=settings.voltage;
- const effectiveWiring=settings.wiring==='three'?'phase-neutral':settings.wiring;
  const num=(x:string)=>x.trim()===''?NaN:Number(x.replace(',','.'));
  const p=num(powerForSizing),v=num(voltage),f=num(effectivePf),l=num(length);
  const ft=temperature5410[effectiveInsulation]?.[temperature];
@@ -1875,6 +1875,7 @@ function ElectricalCatalogAdmin(){
   setError('');setNotice('');
   const payload={category:form.category,name:form.name.trim(),description:form.description.trim()||null,section_mm2:form.category==='cabo'&&form.section_mm2?Number(form.section_mm2):null,nominal_a:form.category!=='cabo'&&form.nominal_a?Number(form.nominal_a):null,poles:form.category!=='cabo'&&form.poles?Number(form.poles):null,curve:form.category==='disjuntor'?(form.curve.trim()||null):null,material:form.category==='cabo'?(form.material.trim()||null):null,insulation:form.category==='cabo'?(form.insulation.trim()||null):null,active:form.active};
   if(!payload.name){setError('Informe a descrição do dispositivo.');return;}
+  if(form.category==='cabo'&&(!['1.5','2.5','4','6','10','16'].includes(form.section_mm2)||!['cobre','aluminio'].includes(catalogKey(form.material))||!['pvc70c','eprxlpe90c'].includes(catalogKey(form.insulation)))){setError('Selecione a seção, a isolação e o material do cabo.');return;}
   if(payload.section_mm2!==null&&(!Number.isFinite(payload.section_mm2)||payload.section_mm2<=0)){setError('Seção inválida.');return;}
   if(payload.nominal_a!==null&&(!Number.isFinite(payload.nominal_a)||payload.nominal_a<=0)){setError('Corrente nominal inválida.');return;}
   setBusy(true);
@@ -1898,7 +1899,11 @@ function ElectricalCatalogAdmin(){
    <h3>{editing?'Editar dispositivo':'Cadastrar dispositivo'}</h3>
    <div className="two"><label>Categoria<select value={form.category} onChange={e=>setForm({...form,category:e.target.value as ElectricalCatalogItem['category']})}><option value="cabo">Cabo</option><option value="disjuntor">Disjuntor</option><option value="dr">DR</option><option value="dps">DPS</option></select></label><label>Descrição / identificação<input required maxLength={180} value={form.name} onChange={e=>setForm({...form,name:e.target.value})}/></label></div>
    <label>Observações técnicas<textarea rows={2} value={form.description} onChange={e=>setForm({...form,description:e.target.value})}/></label>
-   {form.category==='cabo'?<div className="two"><label>Seção nominal (mm²)<input type="number" min="0.1" step="any" value={form.section_mm2} onChange={e=>setForm({...form,section_mm2:e.target.value})}/></label><label>Material<input value={form.material} placeholder="Ex.: cobre" onChange={e=>setForm({...form,material:e.target.value})}/></label><label>Isolação<input value={form.insulation} placeholder="Ex.: PVC 70 °C" onChange={e=>setForm({...form,insulation:e.target.value})}/></label></div>:<div className="two"><label>Corrente nominal (A)<input type="number" min="0.1" step="any" value={form.nominal_a} onChange={e=>setForm({...form,nominal_a:e.target.value})}/></label><label>Número de polos<input type="number" min="1" max="4" step="1" value={form.poles} onChange={e=>setForm({...form,poles:e.target.value})}/></label>{form.category==='disjuntor'&&<label>Curva<input value={form.curve} placeholder="Ex.: C" onChange={e=>setForm({...form,curve:e.target.value})}/></label>}</div>}
+   {form.category==='cabo'?<div className="ep-catalog-choices">{([
+ ['section_mm2','Seção nominal (mm²)',[['1.5','1,5 mm²'],['2.5','2,5 mm²'],['4','4,0 mm²'],['6','6,0 mm²'],['10','10 mm²'],['16','16 mm²']]],
+ ['insulation','Isolação',[['PVC 70 °C','PVC 70 ºC'],['EPR / XLPE 90 °C','EPR / XLPE 90 ºC']]],
+ ['material','Material',[['Cobre','Cobre'],['Alumínio','Alumínio']]]
+ ] as const).map(([field,label,options])=><fieldset key={field} className="ep-catalog-choice"><legend>{label}</legend><div className="ep-catalog-choice-buttons">{options.map(([value,caption])=><button key={value} type="button" aria-pressed={catalogKey(form[field])===catalogKey(value)} className="outline" onClick={()=>setForm(old=>({...old,[field]:value}))}>{caption}</button>)}</div></fieldset>)}</div>:<div className="two"><label>Corrente nominal (A)<input type="number" min="0.1" step="any" value={form.nominal_a} onChange={e=>setForm({...form,nominal_a:e.target.value})}/></label><label>Número de polos<input type="number" min="1" max="4" step="1" value={form.poles} onChange={e=>setForm({...form,poles:e.target.value})}/></label>{form.category==='disjuntor'&&<label>Curva<input value={form.curve} placeholder="Ex.: C" onChange={e=>setForm({...form,curve:e.target.value})}/></label>}</div>}
    <label><input type="checkbox" checked={form.active} onChange={e=>setForm({...form,active:e.target.checked})}/> Dispositivo ativo</label>
    <div className="actions"><button className="primary" disabled={busy} type="submit">{busy?'Salvando...':editing?'Salvar alterações':'Cadastrar'}</button>{editing&&<button type="button" className="outline" onClick={()=>{setEditing(null);setForm({...emptyElectricalItem})}}>Cancelar edição</button>}</div>
   </form>

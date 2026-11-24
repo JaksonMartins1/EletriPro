@@ -371,3 +371,11 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 @media(max-width:500px){.ep-supply-summary{grid-template-columns:1fr}}
 
 .ep-catalog-ratings{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0 20px}.ep-catalog-ratings span{border:1px solid var(--border,#414858);border-radius:8px;padding:8px 12px}
+
+/* Seleções do catálogo e checkboxes com a cor personalizada. */
+.app input[type="checkbox"]{accent-color:var(--accent,#eab308)}
+.ep-catalog-choices{display:grid;gap:12px}
+.ep-catalog-choice{min-width:0;border:0;padding:0;margin:0}
+.ep-catalog-choice legend{font-weight:600;margin-bottom:8px}
+.ep-catalog-choice-buttons{display:flex;flex-wrap:wrap;gap:8px}
+.ep-catalog-choice-buttons button[aria-pressed="true"]{background:var(--accent,#eab308);border-color:var(--accent,#eab308);color:#111;font-weight:700}
