@@ -1422,7 +1422,7 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
  <label style={{display:'flex',alignItems:'center',gap:7}}><input type="checkbox" checked={exportValues} onChange={e=>setExportValues(e.target.checked)}/> Valores</label>
  </div>
  <button type="button" className="primary" disabled={busy||(!exportMaterials&&!exportLabor)} onClick={()=>void (async()=>{
-  const selected=consolidateMaterialRows(rows.filter(r=>r.item_type!=='labor'&&exportMaterials)).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
+  const selected=consolidateMaterialRows(rows.filter(r=>r.item_type!=='labor'&&exportMaterials)).filter(r=>Number(r.quantity)>0).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
   if(!selected.length){setStatus('Não há itens das categorias selecionadas para exportar.');return;}
   setBusy(true);setStatus('Gerando PDF...');
   try{
@@ -1731,7 +1731,7 @@ function maintenanceReportSections(m:MaintenanceData,projectCircuits:SavedCircui
 }
 function maintenanceMaterialSections(m:MaintenanceData,catalog:CatalogDescription[]=[]):ReportSection[]{
  const rows:(string|number|null|undefined)[][]=[];
- const add=(item:string,unit:string,qty:number|string,source:string)=>rows.push([item,unit,String(qty),source]);
+ const add=(item:string,unit:string,qty:number|string,source:string)=>{if(typeof qty==='number'&&!(qty>0))return;rows.push([item,unit,String(qty),source]);};
  const cableTotals=new Map<string,number>();
  const addCable=(section:string,kind:string,meters:number)=>{if(!(meters>0))return;const key=`${catalogCableDescription(catalog,Number(section),'copper','PVC 70 °C')||`Cabo cobre ${section} mm²`} — ${kind}`;cableTotals.set(key,(cableTotals.get(key)||0)+meters)};
  for(const c of m.circuits){
@@ -1856,7 +1856,7 @@ function TechnicalReport({client,userId,professional,logo,accent,settings,mainte
    }):[];
    let savedRows:MaterialRow[]=[];
    if(needsBudget){if(!id)throw new Error('Projeto não encontrado.');const selected=await supabase.from('eletripro_budgets').select('id,title').eq('project_id',id).eq('id',budgetId).single();if(selected.error)throw selected.error;const r=await supabase.from('eletripro_budget_items').select('id,description,quantity,unit,unit_price,item_type').eq('budget_id',budgetId).order('description');if(r.error)throw r.error;savedRows=r.data||[];add('Orçamento de referência',['Parâmetro','Valor'],[['Orçamento',selected.data.title]]);}
-   const chosen=(maintenanceMode?consolidateMaterialRows(maintenanceMaterials):savedRows).filter(m=>m.item_type==='labor'?options.labor:options.materials);
+   const chosen=(maintenanceMode?consolidateMaterialRows(maintenanceMaterials):savedRows).filter(m=>Number(m.quantity)>0&&(m.item_type==='labor'?options.labor:options.materials));
    for(const kind of ['material','labor'] as const){if(!(kind==='labor'?options.labor:options.materials))continue;const rows=chosen.filter(m=>kind==='labor'?m.item_type==='labor':m.item_type!=='labor');const data=rows.map(m=>[m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR(rowTotal(m))]:[])]);if(options.values&&rows.length)data.push(['Total', '', '', '',moneyBR(rows.reduce((sum,m)=>sum+rowTotal(m),0))]);add(kind==='labor'?'Mão de obra':'Lista de materiais',['Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],data,'materials');}
    if(maintenanceMode&&options.materials){const pending=maintenance.circuits.filter(c=>c.changeCables&&(!(Number(c.length)>0)||!(Number(c.proposedSection)>0)||![c.phaseConductors??'1',c.neutralConductors??'1',c.earthConductors??'1'].some(v=>Number(v)>0)));if(pending.length)add('Pendências de quantitativos',['Circuito','Dados faltantes'],pending.map(c=>[c.name,'Informe comprimento, seção proposta e quantidade de condutores por tipo']));}
    const total=options.values&&(options.materials||options.labor)?moneyBR(chosen.reduce((sum,m)=>sum+(Number(m.quantity)||0)*(Number(m.unit_price)||0),0)):undefined;
