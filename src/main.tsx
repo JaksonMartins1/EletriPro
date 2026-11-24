@@ -1445,7 +1445,7 @@ type BudgetSyncState={origins:Record<string,BudgetOrigin>;excluded:string[]};
 type CloudBudget={id:string;title:string;status:string;sync_state?:BudgetSyncState|null};
 type CloudBudgetItem={id:string;description:string;quantity:number;unit:string;unit_price:number;item_type:'material'|'labor'};
 type BudgetEditItem=BudgetItem & {cloudId?:string;itemType:'material'|'labor'};
-function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,accent}:{clientId:string;userId:string;localBudget:BudgetItem[];client:Client;professional:string;logo:string;accent:string}){
+function BudgetsPanel({clientId,userId,client,professional,logo,accent}:{clientId:string;userId:string;localBudget:BudgetItem[];client:Client;professional:string;logo:string;accent:string}){
  const [projectId,setProjectId]=useState('');
  const [serviceTemplates,setServiceTemplates]=useState<{description:string;quantity:number;key:string}[]>([]);
  const syncState=React.useRef<BudgetSyncState>({origins:{},excluded:[]});
@@ -1455,14 +1455,16 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  const [selectedId,setSelectedId]=useState<string|null>(null);
  const [title,setTitle]=useState('Novo orçamento');
  const [editorOpen,setEditorOpen]=useState(false);
- const [viewMode,setViewMode]=useState(false);
+ 
  const [items,setItems]=useState<BudgetEditItem[]>([]);
  const [loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[dirty,setDirty]=useState(false);
  const [status,setStatus]=useState('');
- const [materials,setMaterials]=useState<MaterialRow[]>([]),[selectedMaterials,setSelectedMaterials]=useState<string[]>([]),[manualType,setManualType]=useState<'material'|'labor'>('material');
- const [pdfOptions,setPdfOptions]=useState({labor:true,materials:false,quantity:true,unitPrice:true,total:true,client:true});
+ const [materials,setMaterials]=useState<MaterialRow[]>([]);
+ const [pdfOptions,setPdfOptions]=useState({labor:true,materials:true,quantity:true,unitPrice:true,total:true,client:true});
  const [pdfBusy,setPdfBusy]=useState(false);
- const [manualDescription,setManualDescription]=useState(''),[manualUnit,setManualUnit]=useState('un'),[manualQty,setManualQty]=useState('1'),[manualPrice,setManualPrice]=useState('0');
+ const [itemEditor,setItemEditor]=useState<BudgetEditItem|null>(null);
+ const [addingItem,setAddingItem]=useState(false);
+
  const request=React.useRef(0);
  const selectedRef=React.useRef<string|null>(null);
  useEffect(()=>{if(!selectedId)return;const onKey=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!busy)newBudget()};window.addEventListener('keydown',onKey);return()=>window.removeEventListener('keydown',onKey)},[selectedId,busy]);
@@ -1472,7 +1474,7 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  const uuid=()=>typeof crypto!=='undefined'&&'randomUUID'in crypto?crypto.randomUUID():`tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
  const confirmDiscard=()=>!dirtyRef.current||window.confirm('Existem alterações não salvas. Deseja descartá-las?');
  const setRowsDirty=(fn:(old:BudgetEditItem[])=>BudgetEditItem[])=>{setItems(fn);updateDirty(true)};
- const sortBudgetRows=(rows:BudgetEditItem[])=>[...rows].sort((a,b)=>a.itemType===b.itemType?a.description.localeCompare(b.description,'pt-BR',{sensitivity:'base',numeric:true}):a.itemType==='material'?-1:1);
+ const sortBudgetRows=(rows:BudgetEditItem[])=>[...rows].sort((a,b)=>a.description.localeCompare(b.description,'pt-BR',{sensitivity:'base',numeric:true}));
  const sourceRows=()=>[...consolidateMaterialRows(materials).map(x=>({key:'material:'+JSON.stringify([x.description.trim().toLocaleLowerCase('pt-BR'),x.unit,Number(x.unit_price)]),description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price),itemType:'material' as const})),...serviceTemplates.map(x=>({...x,unit:'un',unitPrice:0,itemType:'labor' as const}))];
  function reconcile(rows:BudgetEditItem[]){
   const state=syncState.current;const desired=sourceRows();const used=new Set<string>();const next=[...rows];
@@ -1500,7 +1502,6 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
   const before=JSON.stringify(loaded);
   const next=row?.status==='rascunho'&&syncReady.current?reconcile(loaded):loaded;
   setItems(sortBudgetRows(next));
-  if(JSON.stringify(next)!==before||grouped.length!==raw.length)setViewMode(false);
   updateDirty(JSON.stringify(next)!==before||grouped.length!==raw.length);
 
  };
@@ -1538,15 +1539,15 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  },[clientId,userId]);
  async function selectBudget(row:CloudBudget){
   if(busy||loading||!confirmDiscard())return;
-  const req=++request.current;setViewMode(true);setEditorOpen(true);setLoading(true);setSelection(row.id);setTitle(row.title);setItems([]);updateDirty(false);setStatus('Carregando itens...');
+  const req=++request.current;setItemEditor(null);setEditorOpen(true);setLoading(true);setSelection(row.id);setTitle(row.title);setItems([]);updateDirty(false);setStatus('Carregando itens...');
   await loadItems(row.id,req);
   if(req===request.current)setLoading(false);
  }
- function closeBudget(){if(busy||loading||!confirmDiscard())return;setViewMode(false);setEditorOpen(false);setItems([]);setSelection(null);setTitle('Novo orçamento');updateDirty(false)}
+ function closeBudget(){if(busy||loading||!confirmDiscard())return;setItemEditor(null);setEditorOpen(false);setItems([]);setSelection(null);setTitle('Novo orçamento');updateDirty(false)}
  function newBudget(){
   if(busy||loading||!confirmDiscard())return;
   syncState.current={origins:{},excluded:[]};
-  setViewMode(false);setEditorOpen(true);setSelection(null);setTitle('Novo orçamento');setItems(sortBudgetRows(reconcile([])));updateDirty(true);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
+  setItemEditor(null);setEditorOpen(true);setSelection(null);setTitle('Novo orçamento');setItems(sortBudgetRows(reconcile([])));updateDirty(true);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
  }
  async function save(){
   if(!supabase||!projectId||busy||loading)return;
@@ -1590,31 +1591,12 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
   if(r.error){setStatus('Erro ao excluir: '+r.error.message);return}
   setBudgets(old=>old.filter(x=>x.id!==id));setEditorOpen(false);setSelection(null);setTitle('Novo orçamento');setItems([]);updateDirty(false);setStatus('Orçamento excluído.');
  }
- function importLocal(){
-  if(!localBudget.length)return;
-  if(!window.confirm(`Adicionar ${localBudget.length} itens do rascunho local a este orçamento? Os itens locais serão preservados; importar novamente poderá duplicá-los.`))return;
-  setRowsDirty(old=>[...old,...localBudget.map(x=>({...x,id:uuid(),itemType:'material' as const}))]);setStatus('Itens locais adicionados. Clique em Salvar orçamento para sincronizar. O rascunho local não foi apagado.');
- }
- function importMaterials(){
-  if(!selectedMaterials.length)return;
-  const chosen=materials.filter(x=>selectedMaterials.includes(x.id));
-  if(!window.confirm(`Adicionar ${chosen.length} material(is) selecionado(s) a este orçamento? Itens repetidos poderão ser duplicados.`))return;
-  setRowsDirty(old=>[...old,...chosen.map(x=>({id:uuid(),description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price),itemType:'material' as const}))]);
-  setSelectedMaterials([]);setStatus('Materiais selecionados adicionados. Clique em Salvar orçamento.');
- }
- function addManual(){
-  const q=Number(manualQty),price=Number(manualPrice);
-  if(!manualDescription.trim()||!Number.isFinite(q)||q<=0||!Number.isFinite(price)||price<0)return;
-  setRowsDirty(old=>[...old,{id:uuid(),description:manualDescription.trim(),quantity:q,unit:manualUnit,unitPrice:price,itemType:manualType}]);
-  setManualDescription('');setManualQty('1');setManualPrice('0');
- }
- function includeServices(){if(syncReady.current)setRowsDirty(old=>sortBudgetRows(reconcile(old)));}
  const materialTotal=items.filter(x=>x.itemType!=='labor').reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
  const laborTotal=items.filter(x=>x.itemType==='labor').reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
  const total=materialTotal+laborTotal;
  async function exportBudgetPdf(){
-  if(pdfBusy||!items.length)return;
-  if(dirty){setStatus('Salve as alterações do orçamento antes de gerar o PDF.');return}
+  if(pdfBusy||loading||busy)return;
+  if(!items.length){setStatus('Inclua itens antes de gerar o PDF.');return}
   const included=items.filter(x=>x.quantity>0&&(x.itemType==='labor'?pdfOptions.labor:pdfOptions.materials)).sort((a,b)=>a.description.localeCompare(b.description,'pt-BR',{numeric:true,sensitivity:'base'}));
   if(!included.length){setStatus('Selecione ao menos uma categoria com itens para o PDF.');return}
   const headers=['Descrição',...(pdfOptions.quantity?['Quantidade','Unidade']:[]),...(pdfOptions.unitPrice?['Valor unitário']:[]),...(pdfOptions.total?['Subtotal']:[])];
@@ -1630,46 +1612,31 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  {loading?<p className="hint">Carregando...</p>:budgets.length===0?<p className="hint">Nenhum orçamento salvo neste projeto.</p>:<div className="ep-record-list">{budgets.map((b,index)=><button key={b.id} type="button" disabled={busy} className="ep-record" onClick={()=>void selectBudget(b)}><span className="ep-record-number">{String(index+1).padStart(2,'0')}</span><span className="ep-record-name">{b.title}</span><span aria-hidden="true">›</span></button>)}</div>}
  {status&&/erro|falha/i.test(status)&&<p className="hint" role="alert">{status}</p>}
  </section>
+
+ {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)closeBudget()}}><section className="panel ep-editor-card" role="dialog" aria-modal={true} aria-label={selectedId?'Editar orçamento':'Novo orçamento'}><div className="ep-editor-heading"><h2>{selectedId?'Editar orçamento':'Novo orçamento'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" disabled={busy||loading} onClick={closeBudget}><X size={20}/></button>}</div>
+ <div className="ep-budget-glance" aria-label="Conferência rápida dos valores"><div><span>Materiais</span><strong>{moneyBR(materialTotal)}</strong></div><div><span>Mão de obra</span><strong>{moneyBR(laborTotal)}</strong></div><div className="ep-budget-glance-total"><span>Total previsto</span><strong>{moneyBR(total)}</strong></div></div>{dirty&&<p className="hint" role="status">Alterações não salvas: confira os itens e salve antes de considerar este total definitivo.</p>}
+ <div className="ep-edit-body">
+ <label>Nome do orçamento<input maxLength={160} value={title} disabled={busy||loading} onChange={e=>{setTitle(e.target.value);updateDirty(true)}}/></label>
+ <div className="panel-heading"><h3>Lista de itens</h3><button className="primary" type="button" disabled={busy||loading} onClick={()=>{setAddingItem(true);setItemEditor({id:uuid(),description:'',quantity:1,unit:'un',unitPrice:0,itemType:'labor'})}}><Plus size={16}/> Adicionar item</button></div>
+ <p className="hint">Alterações nesta lista não modificam o dimensionamento nem a lista de materiais do projeto.</p>
+ {serviceWarning&&<p className="hint">{serviceWarning}</p>}
+ <div className="ep-record-list">{sortBudgetRows(items).map((x,index)=><div className="ep-material-record" key={x.id}><span className="ep-record-number">{String(index+1).padStart(2,'0')}</span><div className="ep-material-info"><strong>{x.description}</strong><span>{x.itemType==='labor'?'Mão de obra':'Material'} · {reportNum(x.quantity)} {x.unit}{x.quantity>0&&<> × {moneyBR(x.unitPrice)} · <b>{moneyBR(x.quantity*x.unitPrice)}</b></>}</span></div><div className="ep-material-actions"><button className="outline" disabled={busy||loading} onClick={()=>{setAddingItem(false);setItemEditor({...x})}}>Editar</button><button className="outline" disabled={busy||loading} onClick={()=>{if(window.confirm('Excluir '+x.description+' da lista?')){const origin=syncState.current.origins[x.id];if(origin)syncState.current.excluded=[...new Set([...syncState.current.excluded,origin.key])];setRowsDirty(old=>old.filter(y=>y.id!==x.id))}}}>Excluir</button></div></div>)}</div>
+ {!items.length&&<p className="hint">Nenhum item na lista.</p>}
+ {itemEditor&&<div className="panel sizing-form" style={{marginTop:12}}><div className="ep-editor-heading"><h3>{addingItem?'Adicionar item':'Editar item'}</h3><button className="outline" onClick={()=>setItemEditor(null)}>Fechar</button></div>
+ <label>Descrição<input value={itemEditor.description} readOnly={!addingItem} onChange={e=>setItemEditor(old=>old?{...old,description:e.target.value}:old)}/></label>
+ {addingItem&&<div className="two"><label>Tipo<select value={itemEditor.itemType} onChange={e=>setItemEditor(old=>old?{...old,itemType:e.target.value as 'material'|'labor'}:old)}><option value="labor">Mão de obra</option><option value="material">Material</option></select></label><label>Unidade<select value={itemEditor.unit} onChange={e=>setItemEditor(old=>old?{...old,unit:e.target.value}:old)}>{['un','m','m²','h','kg'].map(u=><option key={u}>{u}</option>)}</select></label></div>}
+ <label>Quantidade</label><div style={{display:'flex',alignItems:'center',gap:8}}><button className="outline" disabled={itemEditor.quantity<=0} onClick={()=>setItemEditor(old=>old?{...old,quantity:Math.max(0,old.quantity-1)}:old)}>−</button>{itemEditor.itemType==='material'?<input type="number" min="0" step="0.001" value={itemEditor.quantity} onChange={e=>setItemEditor(old=>old?{...old,quantity:Math.max(0,Number(e.target.value))}:old)}/>:<strong>{itemEditor.quantity}</strong>}<button className="primary" onClick={()=>setItemEditor(old=>old?{...old,quantity:old.quantity+1}:old)}>+</button></div>
+ {itemEditor.quantity>0&&<label>Valor unitário (R$)<input type="number" min="0" step="0.01" value={itemEditor.unitPrice} onChange={e=>setItemEditor(old=>old?{...old,unitPrice:Number(e.target.value)}:old)}/></label>}
+ <strong>Total: {moneyBR(itemEditor.quantity*itemEditor.unitPrice)}</strong><button className="primary" disabled={!itemEditor.description.trim()||!Number.isFinite(itemEditor.quantity)||itemEditor.quantity<0||!Number.isFinite(itemEditor.unitPrice)||itemEditor.unitPrice<0} onClick={()=>{const item={...itemEditor,description:itemEditor.description.trim()};setRowsDirty(old=>sortBudgetRows(addingItem?[...old,item]:old.map(x=>x.id===item.id?item:x)));setItemEditor(null)}}>Confirmar item</button></div>}
+ <div className="ep-total-highlight"><span>Total do orçamento</span><strong>{moneyBR(total)}</strong></div>
     <fieldset className="ep-budget-pdf-options"><legend>Personalizar PDF deste orçamento</legend>
  <div className="ep-budget-pdf-grid">{([['labor','Mão de obra / serviços'],['materials','Materiais'],['quantity','Quantidades e unidades'],['unitPrice','Valores unitários'],['total','Subtotais e total'],['client','Dados do cliente']] as const).map(([key,label])=><label key={key}><input type="checkbox" checked={pdfOptions[key]} onChange={e=>setPdfOptions(old=>({...old,[key]:e.target.checked}))}/>{label}</label>)}</div>
- <button type="button" className="outline" disabled={pdfBusy||!items.length} onClick={()=>void exportBudgetPdf()}>{pdfBusy?'Gerando PDF...':'Gerar PDF do orçamento'}</button>
+ <button type="button" className="outline" disabled={pdfBusy||busy||loading||!!itemEditor} onClick={()=>void exportBudgetPdf()}>{pdfBusy?'Gerando PDF...':'Gerar PDF do orçamento'}</button>
  </fieldset>
- {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)closeBudget()}}><section className="panel ep-editor-card" role="dialog" aria-modal={true} aria-label={selectedId?'Editar orçamento':'Novo orçamento'}><div className="ep-editor-heading"><h2>{selectedId?(viewMode?title:'Editar orçamento'):'Novo orçamento'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" disabled={busy||loading} onClick={closeBudget}><X size={20}/></button>}</div>
- <div className="ep-budget-glance" aria-label="Conferência rápida dos valores"><div><span>Materiais</span><strong>{moneyBR(materialTotal)}</strong></div><div><span>Mão de obra</span><strong>{moneyBR(laborTotal)}</strong></div><div className="ep-budget-glance-total"><span>Total previsto</span><strong>{moneyBR(total)}</strong></div></div>{dirty&&<p className="hint" role="status">Alterações não salvas: confira os itens e salve antes de considerar este total definitivo.</p>}
- {viewMode&&selectedId?<div className="ep-summary">
- <div className="ep-summary-table"><table><thead><tr><th>Item</th><th>Qtd.</th><th>Un.</th><th>Valor un.</th><th>Subtotal</th><th>Ações</th></tr></thead><tbody>{items.map(x=><tr key={x.id}><td>{x.description}{x.itemType==='labor'?' (Mão de obra)':''}</td><td>{x.quantity.toLocaleString('pt-BR',{maximumFractionDigits:3})}</td><td>{x.unit}</td><td>{moneyBR(x.unitPrice)}</td><td>{moneyBR(x.quantity*x.unitPrice)}</td><td><button type="button" className="outline" onClick={()=>setViewMode(false)} title="Editar item">Editar</button> <button type="button" className="outline" onClick={()=>{if(window.confirm('Excluir '+x.description+'?')){setRowsDirty(old=>old.filter(y=>y.id!==x.id));setViewMode(false)}}} title="Excluir item">Excluir</button></td></tr>)}</tbody></table></div>
- <div className="ep-total-highlight"><span>Total do orçamento</span><strong>{moneyBR(total)}</strong></div>
- <p className="hint">Materiais: {moneyBR(materialTotal)} · Mão de obra: {moneyBR(laborTotal)}</p>
- <div className="ep-summary-actions"><button type="button" className="primary" disabled={busy||loading} onClick={()=>setViewMode(false)}>Editar / Incluir mão de obra</button><button type="button" className="outline" disabled={busy||loading} onClick={()=>void removeBudget()}>Excluir</button><button type="button" className="outline" onClick={closeBudget}>Fechar</button></div>
- </div>:<div className="ep-edit-body"><label>Nome do orçamento<input maxLength={160} value={title} disabled={busy||loading} onChange={e=>{setTitle(e.target.value);updateDirty(true)}} placeholder="Ex.: Instalação elétrica - residência"/></label>
- <div style={{display:'flex',gap:8,flexWrap:'wrap',margin:'12px 0'}}>
- <button type="button" className="outline" disabled={busy||loading||!localBudget.length} onClick={importLocal}>Importar rascunho local ({localBudget.length})</button>
- <button type="button" className="outline" disabled={busy||loading||!selectedMaterials.length} onClick={importMaterials}>Adicionar selecionados ({selectedMaterials.length})</button>
- </div>
- <div style={{maxHeight:190,overflowY:'auto',border:'1px solid #444',borderRadius:8,padding:10}}>
- <div className="ep-select-all"><strong>Selecionar materiais do projeto</strong><label><input type="checkbox" aria-label="Selecionar todos os materiais" disabled={busy||loading||materials.length===0} checked={materials.length>0&&materials.every(x=>selectedMaterials.includes(x.id))} onChange={e=>setSelectedMaterials(e.target.checked?materials.map(x=>x.id):[])}/><span>Selecionar todos</span></label></div>
- {materials.length===0?<p className="hint">Nenhum material cadastrado.</p>:materials.map(x=><label key={x.id} style={{display:'flex',alignItems:'center',gap:8,marginTop:8}}><input type="checkbox" style={{width:18}} checked={selectedMaterials.includes(x.id)} disabled={busy||loading} onChange={e=>setSelectedMaterials(old=>e.target.checked?[...old,x.id]:old.filter(id=>id!==x.id))}/><span>{x.description} · {x.quantity} {x.unit} · {moneyBR(Number(x.unit_price))}/un.</span></label>)}
- </div>
- <button type="button" className="outline" disabled={busy||loading||!serviceTemplates.length} onClick={includeServices}>Atualizar itens do projeto</button>{serviceWarning&&<p className="hint">{serviceWarning}</p>}<p className="hint">As importações são opcionais e não apagam a origem. Revise os itens antes de salvar para evitar duplicidades.</p>
- <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:8}}>Descrição</th><th style={{textAlign:'left',padding:8}}>Tipo</th><th style={{textAlign:'left',padding:8,width:90}}>Quantidade</th><th style={{textAlign:'left',padding:8,width:75}}>Un.</th><th style={{textAlign:'left',padding:8,width:125}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:8,width:120}}>Subtotal</th><th style={{width:48}}/></tr></thead><tbody>{items.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:8}}><input aria-label="Descrição" style={{minWidth:180}} disabled={busy||loading} value={x.description} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,description:e.target.value}:y))}/></td><td style={{padding:8}}><select aria-label={'Tipo '+x.description} disabled={busy||loading} value={x.itemType} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,itemType:e.target.value as 'material'|'labor'}:y))}><option value="material">Material</option><option value="labor">Mão de obra</option></select></td><td style={{padding:8}}>{x.itemType==='labor'?<div style={{display:'flex',alignItems:'center',gap:6}}><button type="button" className="outline" aria-label={'Diminuir '+x.description} disabled={busy||loading||x.quantity<=0} onClick={()=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Math.max(0,y.quantity-1)}:y))}>−</button><span>{x.quantity}</span><button type="button" className="primary" aria-label={'Aumentar '+x.description} disabled={busy||loading} onClick={()=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:y.quantity+1}:y))}>+</button></div>:<input aria-label={'Quantidade '+x.description} style={{minWidth:65}} type="number" min="0" step="0.001" disabled={busy||loading} value={x.quantity} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Number(e.target.value)}:y))}/>}</td><td style={{padding:8}}><input aria-label={'Unidade '+x.description} style={{minWidth:55}} disabled={busy||loading} value={x.unit} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unit:e.target.value}:y))}/></td><td style={{padding:8}}>{x.quantity>0?<input aria-label={'Preço '+x.description} style={{minWidth:95}} type="number" min="0" step="0.01" disabled={busy||loading} value={x.unitPrice} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Number(e.target.value)}:y))}/>:<span>—</span>}</td><td style={{textAlign:'right',whiteSpace:'nowrap',padding:8}}>{x.quantity>0?moneyBR(x.quantity*x.unitPrice):'—'}</td><td><button type="button" className="outline" disabled={busy||loading} title="Remover item" onClick={()=>{if(window.confirm('Excluir '+x.description+'?'))setRowsDirty(old=>old.filter(y=>y.id!==x.id))}}><X size={16}/></button></td></tr>)}</tbody></table></div>
- {items.length===0&&<p className="hint">Nenhum item incluído. Importe materiais ou adicione um item manualmente.</p>}
- <div style={{marginTop:18}}><p><strong>Materiais:</strong> {moneyBR(materialTotal)}</p><p><strong>Mão de obra:</strong> {moneyBR(laborTotal)}</p></div>
- <div style={{display:'flex',justifyContent:'space-between',gap:12,margin:'18px 0',flexWrap:'wrap'}}><strong>Total do orçamento</strong><strong style={{fontSize:22}}>{moneyBR(total)}</strong></div>
- <div className="sizing-metric" style={{padding:16}}><h3>Adicionar item manualmente</h3><label>Categoria<select value={manualType} onChange={e=>setManualType(e.target.value as 'material'|'labor')}><option value="material">Material</option><option value="labor">Mão de obra / serviço</option></select></label>
- <label>Descrição<input value={manualDescription} disabled={busy||loading} onChange={e=>setManualDescription(e.target.value)}/></label>
- <div className="two"><label>Unidade<select value={manualUnit} disabled={busy||loading} onChange={e=>setManualUnit(e.target.value)}><option value="un">un</option><option value="m">m</option><option value="m²">m²</option><option value="h">h</option><option value="kg">kg</option></select></label><label>Quantidade{manualType==='labor'?<span style={{display:'flex',alignItems:'center',gap:8}}><button type="button" className="outline" disabled={busy||loading||Number(manualQty)<=0} onClick={()=>setManualQty(String(Math.max(0,Number(manualQty)-1)))}>−</button><span>{manualQty}</span><button type="button" className="primary" disabled={busy||loading} onClick={()=>setManualQty(String(Number(manualQty)+1))}>+</button></span>:<input type="number" min="0" step="0.001" value={manualQty} disabled={busy||loading} onChange={e=>setManualQty(e.target.value)}/>}</label></div>
- {Number(manualQty)>0&&<label>Preço unitário (R$)<input type="number" min="0" step="0.01" value={manualPrice} disabled={busy||loading} onChange={e=>setManualPrice(e.target.value)}/></label>}
- <button type="button" className="outline" disabled={busy||loading||!manualDescription.trim()||!(Number(manualQty)>0)||!(Number(manualPrice)>=0)} onClick={addManual}><Plus size={16}/> Adicionar item</button>
- </div>
- <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:16}}>
- <button type="button" className="primary" disabled={busy||loading||!projectId||!title.trim()} onClick={()=>void save()}>{busy?'Salvando...':selectedId?'Atualizar orçamento':'Salvar orçamento'}</button>
- {selectedId&&<button type="button" className="outline" disabled={busy||loading} onClick={()=>void removeBudget()}>Excluir orçamento</button>}
- </div>
- {dirty&&<p className="hint">Há alterações não salvas no Supabase.</p>}
- <p className="hint">O rascunho local continua disponível no navegador e não é excluído automaticamente. Os orçamentos salvos podem ser abertos em outro dispositivo.</p>
- <button type="button" className="outline" disabled={busy||loading} onClick={closeBudget}>Fechar</button></div>}</section></div>} </div>;
+ <p className="hint" role="status">{status}</p>
+ <div style={{display:'flex',gap:8,flexWrap:'wrap',marginTop:16}}><button className="primary" disabled={busy||loading||!projectId||!title.trim()||!!itemEditor} onClick={()=>void save()}>{busy?'Salvando...':'Salvar orçamento'}</button>{selectedId&&<button className="outline" disabled={busy||loading} onClick={()=>void removeBudget()}>Excluir orçamento</button>}<button className="outline" disabled={busy||loading} onClick={closeBudget}>Fechar</button></div>
+ </div></section></div>} </div>;
 }
-
 
 
 // Manutenção: registros separados dos parâmetros de projeto novo, armazenados no JSON do projeto.
