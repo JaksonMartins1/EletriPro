@@ -1253,22 +1253,21 @@ function generatedCircuitItems(c:SavedCircuit,settings?:InstallationSettings,roo
  const list=budgetCableItems({connection,length:Number.isFinite(length)&&length>0?length:0,size:section,material:String(d.material||cfg.conductorMaterial||'copper'),insulation:String(d.insulation||cfg.conductorInsulation||'PVC 70 °C'),circuit:String(d.circuit||'tug'),wiring,breaker,curve:String(live?.curve||r.curve||'a confirmar'),poles:wiring==='phase-neutral'?1:wiring==='phase-phase'?2:3,catalog});
  return list.map((item,i)=>({description:item.description,quantity:item.quantity,unit:item.unit,source_key:`${c.id}:${item.id.startsWith('dj-')?'breaker':item.sourceRole||i}`}));
 }
-async function syncCircuitMaterials(projectId:string,circuit:SavedCircuit|null,removedId?:string,settings?:InstallationSettings,rooms?:SavedEnvironment[]){
+async function syncCircuitMaterials(projectId:string,circuit:SavedCircuit|null,removedId?:string,settings?:InstallationSettings,rooms?:SavedEnvironment[],preloaded?:{existing:GeneratedMaterial[];catalog:CatalogDescription[]}){
  if(!supabase)throw new Error('Supabase indisponível');
  const id=removedId||circuit?.id;
  if(!id)return;
- const found=await supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',projectId).not('source_key','is',null);
+ const found=preloaded?{data:preloaded.existing,error:null}:await supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',projectId).not('source_key','is',null);
  if(found.error)throw found.error;
  const existing=((found.data||[]) as GeneratedMaterial[]).filter(x=>x.source_key?.startsWith(id+':'));
- const catalog=circuit?await loadActiveElectricalCatalog():[];
+ const catalog=circuit?(preloaded?.catalog??await loadActiveElectricalCatalog()):[];
  const desired=circuit?generatedCircuitItems(circuit,settings,rooms,catalog):[];
  // Sem dimensionamento válido, não apaga materiais existentes: exige revisão.
  if(desired===null)throw new Error('Circuito sem dimensionamento completo. Materiais anteriores preservados para revisão.');
- for(const item of desired||[]){
-  const old=existing.find(x=>x.source_key===item.source_key);
-  const r=old?await supabase.from('eletripro_materials').update({description:item.description,quantity:item.quantity,unit:item.unit}).eq('id',old.id).eq('project_id',projectId):await supabase.from('eletripro_materials').insert({project_id:projectId,...item,unit_price:0,item_type:'material'});
-  if(r.error)throw r.error;
- }
+ const inserts=(desired||[]).filter(item=>!existing.some(x=>x.source_key===item.source_key)).map(item=>({project_id:projectId,...item,unit_price:0,item_type:'material'}));
+ const updates=(desired||[]).flatMap(item=>{const old=existing.find(x=>x.source_key===item.source_key);return old&&(old.description!==item.description||Number(old.quantity)!==Number(item.quantity)||old.unit!==item.unit)?[{old,item}]:[]});
+ const results=await Promise.all([...updates.map(({old,item})=>supabase!.from('eletripro_materials').update({description:item.description,quantity:item.quantity,unit:item.unit}).eq('id',old.id).eq('project_id',projectId)),...(inserts.length?[supabase.from('eletripro_materials').insert(inserts)]:[])]);
+ for(const r of results)if(r.error)throw r.error;
  const stale=existing.filter(x=>!(desired||[]).some(y=>y.source_key===x.source_key));
  if(stale.length){const r=await supabase.from('eletripro_materials').delete().eq('project_id',projectId).in('id',stale.map(x=>x.id));if(r.error)throw r.error;}
 }
@@ -1282,12 +1281,11 @@ async function syncUnifiedBudget(projectId:string){
  if(b.error)throw b.error;
  let budgetId=b.data?.id as string|undefined;
  if(!budgetId){const created=await supabase.from('eletripro_budgets').insert({project_id:projectId,title:UNIFIED_BUDGET_TITLE,status:'rascunho'}).select('id').single();if(created.error)throw created.error;budgetId=created.data.id;}
- // Nunca reescrever itens de orçamento histórico: apenas o orçamento operacional.
- const existing=await supabase.from('eletripro_budget_items').select('id').eq('budget_id',budgetId);
- if(existing.error)throw existing.error;
- if(existing.data?.length){const del=await supabase.from('eletripro_budget_items').delete().eq('budget_id',budgetId);if(del.error)throw del.error;}
- const items=(m.data||[]).map(x=>({budget_id:budgetId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unit_price,item_type:x.item_type==='labor'?'labor':'material'}));
+ // Orçamentos existentes são documentos editáveis, não devem ser recriados.
+ if(b.data?.id)return;
+ const items=consolidateMaterialRows((m.data||[]).map((x,i)=>({...x,id:String(i)})) as MaterialRow[]).map(x=>({budget_id:budgetId,description:x.description,quantity:x.quantity,unit:x.unit,unit_price:x.unit_price,item_type:x.item_type==='labor'?'labor':'material'}));
  if(items.length){const ins=await supabase.from('eletripro_budget_items').insert(items);if(ins.error)throw ins.error;}
+
 }
 function consolidateMaterialRows(items:MaterialRow[]):MaterialRow[]{
  const grouped=new Map<string,MaterialRow>();
@@ -1366,14 +1364,11 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
  }
  async function refreshGenerated(id:string,skipped:string[]){
    if(!supabase)throw new Error('Supabase indisponível');
-   const cr=await supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id);
-   if(cr.error)throw cr.error;
-   const er=await supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id);
-   if(er.error)throw er.error;
+   const [cr,er,mr,catalog]=await Promise.all([supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id),supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id),supabase.from('eletripro_materials').select('id,source_key,description,quantity,unit,unit_price').eq('project_id',id).not('source_key','is',null),loadActiveElectricalCatalog()]);
+   if(cr.error)throw cr.error;if(er.error)throw er.error;if(mr.error)throw mr.error;
    const currentRooms=(er.data||[]) as SavedEnvironment[];
-   for(const c of (cr.data||[]) as SavedCircuit[]){
-    try{await syncCircuitMaterials(id,c,undefined,settings,currentRooms);if(!(materialRouteLength(c,currentRooms)>0))skipped.push(c.title+': metragem pendente')}catch(e){skipped.push(c.title+': '+String(e))}
-   }
+   const circuits=(cr.data||[]) as SavedCircuit[];
+   for(let i=0;i<circuits.length;i+=4)await Promise.all(circuits.slice(i,i+4).map(async c=>{try{await syncCircuitMaterials(id,c,undefined,settings,currentRooms,{existing:(mr.data||[]) as GeneratedMaterial[],catalog});if(!(materialRouteLength(c,currentRooms)>0))skipped.push(c.title+': metragem pendente')}catch(e){skipped.push(c.title+': '+String(e))}}));
    await syncUnifiedBudget(id);
  }
  async function consolidateAll(){
@@ -1445,12 +1440,16 @@ function MaterialsPanel({clientId,userId,localBudget,client,professional,logo,ac
 
 
 // v0.7.22 — Orçamentos por projeto no Supabase. Rascunho local preservado até importação explícita.
-type CloudBudget={id:string;title:string;status:string};
+type BudgetOrigin={key:string;quantity:number;description:string;unit:string;itemType:'material'|'labor'};
+type BudgetSyncState={origins:Record<string,BudgetOrigin>;excluded:string[]};
+type CloudBudget={id:string;title:string;status:string;sync_state?:BudgetSyncState|null};
 type CloudBudgetItem={id:string;description:string;quantity:number;unit:string;unit_price:number;item_type:'material'|'labor'};
 type BudgetEditItem=BudgetItem & {cloudId?:string;itemType:'material'|'labor'};
 function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,accent}:{clientId:string;userId:string;localBudget:BudgetItem[];client:Client;professional:string;logo:string;accent:string}){
  const [projectId,setProjectId]=useState('');
- const [serviceTemplates,setServiceTemplates]=useState<{description:string;quantity:number}[]>([]);
+ const [serviceTemplates,setServiceTemplates]=useState<{description:string;quantity:number;key:string}[]>([]);
+ const syncState=React.useRef<BudgetSyncState>({origins:{},excluded:[]});
+ const syncReady=React.useRef(false);
  const [serviceWarning,setServiceWarning]=useState('');
  const [budgets,setBudgets]=useState<CloudBudget[]>([]);
  const [selectedId,setSelectedId]=useState<string|null>(null);
@@ -1473,13 +1472,37 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  const uuid=()=>typeof crypto!=='undefined'&&'randomUUID'in crypto?crypto.randomUUID():`tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`;
  const confirmDiscard=()=>!dirtyRef.current||window.confirm('Existem alterações não salvas. Deseja descartá-las?');
  const setRowsDirty=(fn:(old:BudgetEditItem[])=>BudgetEditItem[])=>{setItems(fn);updateDirty(true)};
+ const sortBudgetRows=(rows:BudgetEditItem[])=>[...rows].sort((a,b)=>a.itemType===b.itemType?a.description.localeCompare(b.description,'pt-BR',{sensitivity:'base',numeric:true}):a.itemType==='material'?-1:1);
+ const sourceRows=()=>[...consolidateMaterialRows(materials).map(x=>({key:'material:'+JSON.stringify([x.description.trim().toLocaleLowerCase('pt-BR'),x.unit,Number(x.unit_price)]),description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price),itemType:'material' as const})),...serviceTemplates.map(x=>({...x,unit:'un',unitPrice:0,itemType:'labor' as const}))];
+ function reconcile(rows:BudgetEditItem[]){
+  const state=syncState.current;const desired=sourceRows();const used=new Set<string>();const next=[...rows];
+  for(const src of desired){
+   if(state.excluded.includes(src.key))continue;
+   let index=next.findIndex(x=>state.origins[x.id]?.key===src.key);
+   if(index<0)index=next.findIndex(x=>!used.has(x.id)&&!state.origins[x.id]&&x.itemType===src.itemType&&x.description.trim().toLocaleLowerCase('pt-BR')===src.description.trim().toLocaleLowerCase('pt-BR')&&x.unit===src.unit);
+   if(index<0){const id=uuid();next.push({id,description:src.description,quantity:src.quantity,unit:src.unit,unitPrice:src.unitPrice,itemType:src.itemType});index=next.length-1;}
+   const item=next[index],prev=state.origins[item.id];used.add(item.id);
+   if(prev){next[index]={...item,description:item.description===prev.description?src.description:item.description,quantity:item.quantity===prev.quantity?src.quantity:item.quantity,unit:item.unit===prev.unit?src.unit:item.unit};}
+   state.origins[item.id]={key:src.key,description:src.description,quantity:src.quantity,unit:src.unit,itemType:src.itemType};
+  }
+  return next.filter(x=>{const prev=state.origins[x.id];if(!prev||used.has(x.id))return true;if(x.description!==prev.description||x.quantity!==prev.quantity||x.unit!==prev.unit||x.unitPrice!==0){delete state.origins[x.id];return true;}delete state.origins[x.id];return false;});
+ }
  const loadItems=async(id:string,req:number)=>{
   if(!supabase)return;
   const result=await supabase.from('eletripro_budget_items').select('id,description,quantity,unit,unit_price,item_type').eq('budget_id',id).order('created_at',{ascending:true});
   if(req!==request.current)return;
   if(result.error){setStatus('Erro ao carregar itens: '+result.error.message);return}
-  setItems(((result.data||[]) as CloudBudgetItem[]).map(x=>({id:x.id,cloudId:x.id,description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price),itemType:x.item_type||'material'})));
-  updateDirty(false);
+  const raw=(result.data||[]) as CloudBudgetItem[];
+  const row=budgets.find(x=>x.id===id);
+  const grouped=row?.sync_state?raw:[...consolidateMaterialRows(raw.filter(x=>x.item_type!=='labor') as MaterialRow[]),...raw.filter(x=>x.item_type==='labor')];
+  const loaded:BudgetEditItem[]=grouped.map(x=>({id:x.id,cloudId:x.id,description:x.description,quantity:Number(x.quantity),unit:x.unit,unitPrice:Number(x.unit_price),itemType:x.item_type||'material'}));
+  syncState.current=row?.sync_state?JSON.parse(JSON.stringify(row.sync_state)):{origins:{},excluded:[]};
+  const before=JSON.stringify(loaded);
+  const next=row?.status==='rascunho'&&syncReady.current?reconcile(loaded):loaded;
+  setItems(sortBudgetRows(next));
+  if(JSON.stringify(next)!==before||grouped.length!==raw.length)setViewMode(false);
+  updateDirty(JSON.stringify(next)!==before||grouped.length!==raw.length);
+
  };
  useEffect(()=>{
   const req=++request.current;
@@ -1488,8 +1511,8 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
    if(!supabase)throw new Error('Supabase indisponível');
    const id=await ensureEletriProject(clientId,userId);
    const [br,mr,er,cr]=await Promise.all([
-    supabase.from('eletripro_budgets').select('id,title,status').eq('project_id',id).order('created_at',{ascending:true}),
-    supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price').eq('project_id',id).order('created_at',{ascending:true}),
+    supabase.from('eletripro_budgets').select('id,title,status,sync_state').eq('project_id',id).order('created_at',{ascending:true}),
+    supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price,item_type').eq('project_id',id).order('created_at',{ascending:true}),
     supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id),
     supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id)
    ]);
@@ -1498,11 +1521,12 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
    const rooms=(er.data||[]) as SavedEnvironment[];
    const counts=rooms.map(r=>estimateRoom(r)?.outlets);
    const circuits=(cr.data||[]) as SavedCircuit[];
+   syncReady.current=!er.error&&!cr.error&&!mr.error;
    setServiceWarning(er.error||cr.error?'Não foi possível consultar todas as cargas. Confira os serviços manualmente.':counts.some(n=>n==null)?'Há ambientes sem quantidade de tomadas definida. Confira a previsão.':'');
    setServiceTemplates([
-    {description:'Instalação de tomadas',quantity:counts.reduce<number>((sum,n)=>sum+(n??0),0)},
-    ...circuits.filter(c=>c.data.circuit==='tue').map(c=>({description:'Instalação de circuito — '+c.title,quantity:1})),
-    ...['spot','luminária','lustre','plafon','pendente','arandela','interruptor'].map(name=>({description:'Instalação de '+name,quantity:0}))
+    {key:'labor:outlets',description:'Instalação de tomadas',quantity:counts.reduce<number>((sum,n)=>sum+(n??0),0)},
+    ...circuits.filter(c=>c.data.circuit==='tue').map(c=>({key:'labor:circuit:'+c.id,description:'Instalação de circuito — '+c.title,quantity:1})),
+    ...['spot','luminária','lustre','plafon','pendente','arandela','interruptor'].map(name=>({key:'labor:fixture:'+name,description:'Instalação de '+name,quantity:0}))
    ]);
    setProjectId(id);setBudgets((br.data||[]) as CloudBudget[]);
    if(mr.error)setStatus('Orçamentos carregados; materiais indisponíveis: '+mr.error.message);
@@ -1521,8 +1545,8 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  function closeBudget(){if(busy||loading||!confirmDiscard())return;setViewMode(false);setEditorOpen(false);setItems([]);setSelection(null);setTitle('Novo orçamento');updateDirty(false)}
  function newBudget(){
   if(busy||loading||!confirmDiscard())return;
-  if(supabase&&projectId)void supabase.from('eletripro_materials').select('id,description,quantity,unit,unit_price').eq('project_id',projectId).order('created_at',{ascending:true}).then(r=>{if(!r.error)setMaterials((r.data||[]) as MaterialRow[])});
-  setViewMode(false);setEditorOpen(true);setSelection(null);setTitle('Novo orçamento');setItems(serviceTemplates.map(x=>({...x,id:uuid(),unit:'un',unitPrice:0,itemType:'labor'})));updateDirty(serviceTemplates.length>0);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
+  syncState.current={origins:{},excluded:[]};
+  setViewMode(false);setEditorOpen(true);setSelection(null);setTitle('Novo orçamento');setItems(sortBudgetRows(reconcile([])));updateDirty(true);setStatus('Novo orçamento. Preencha os dados e clique em Salvar orçamento.');
  }
  async function save(){
   if(!supabase||!projectId||busy||loading)return;
@@ -1540,26 +1564,20 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
     budgetId=r.data.id;setSelection(budgetId);
     setBudgets(old=>[...old,{id:budgetId!,title:title.trim(),status:'rascunho'}]);
    }
-   // Atualizar/adicionar antes de excluir; se houver falha, os itens anteriores permanecem.
-   const persisted:BudgetEditItem[]=[];
-   for(const item of items){
-    const payload={description:item.description.trim(),quantity:item.quantity,unit:item.unit,unit_price:item.unitPrice,item_type:item.itemType};
-    const r=item.cloudId
-     ?await supabase.from('eletripro_budget_items').update(payload).eq('id',item.cloudId).eq('budget_id',budgetId).select('id').single()
-     :await supabase.from('eletripro_budget_items').insert({budget_id:budgetId,...payload}).select('id').single();
-    if(r.error)throw r.error;
-    persisted.push({...item,id:r.data.id,cloudId:r.data.id});
-   }
    const existing=await supabase.from('eletripro_budget_items').select('id').eq('budget_id',budgetId);
    if(existing.error)throw existing.error;
-   const keep=new Set(persisted.map(x=>x.cloudId));
-   for(const old of existing.data||[]){
-    if(!keep.has(old.id)){
-     const del=await supabase.from('eletripro_budget_items').delete().eq('id',old.id).eq('budget_id',budgetId);
-     if(del.error)throw del.error;
-    }
-   }
-   setItems(persisted);setBudgets(old=>old.map(x=>x.id===budgetId?{...x,title:title.trim()}:x));
+   const state=syncState.current;
+   const keepIds=new Set(items.map(x=>x.id));
+   const excluded=[...new Set([...state.excluded,...Object.entries(state.origins).filter(([id])=>!keepIds.has(id)).map(([,o])=>o.key)])];
+   const origins:Record<string,BudgetOrigin>={};
+   const persisted=items.map(item=>{const id=item.cloudId||crypto.randomUUID();if(state.origins[item.id])origins[id]=state.origins[item.id];return {...item,id,cloudId:id};});
+   const payload=persisted.map(item=>({id:item.id,budget_id:budgetId,description:item.description.trim(),quantity:item.quantity,unit:item.unit,unit_price:item.unitPrice,item_type:item.itemType}));
+   if(payload.length){const r=await supabase.from('eletripro_budget_items').upsert(payload,{onConflict:'id'});if(r.error)throw r.error;}
+   const keep=new Set(persisted.map(x=>x.id));const removed=(existing.data||[]).filter(x=>!keep.has(x.id)).map(x=>x.id);
+   if(removed.length){const r=await supabase.from('eletripro_budget_items').delete().eq('budget_id',budgetId).in('id',removed);if(r.error)throw r.error;}
+   const metadata={origins,excluded};
+   const meta=await supabase.from('eletripro_budgets').update({sync_state:metadata}).eq('id',budgetId).eq('project_id',projectId);if(meta.error)throw meta.error;
+   syncState.current=metadata;setItems(sortBudgetRows(persisted));setBudgets(old=>old.map(x=>x.id===budgetId?{...x,title:title.trim(),sync_state:metadata}:x));
    updateDirty(false);setStatus('Orçamento salvo no Supabase.');
   }catch(e){setStatus('Falha ao salvar: '+(e instanceof Error?e.message:String(e))+'. Confira o orçamento antes de tentar novamente.')}
   finally{setBusy(false)}
@@ -1590,16 +1608,14 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
   setRowsDirty(old=>[...old,{id:uuid(),description:manualDescription.trim(),quantity:q,unit:manualUnit,unitPrice:price,itemType:manualType}]);
   setManualDescription('');setManualQty('1');setManualPrice('0');
  }
- function includeServices(){
-  setRowsDirty(old=>{const seen=new Set(old.filter(x=>x.itemType==='labor').map(x=>x.description.trim().toLocaleLowerCase('pt-BR')));return [...old,...serviceTemplates.filter(x=>{const key=x.description.toLocaleLowerCase('pt-BR');if(seen.has(key))return false;seen.add(key);return true}).map(x=>({...x,id:uuid(),unit:'un',unitPrice:0,itemType:'labor' as const}))]});
- }
+ function includeServices(){if(syncReady.current)setRowsDirty(old=>sortBudgetRows(reconcile(old)));}
  const materialTotal=items.filter(x=>x.itemType!=='labor').reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
  const laborTotal=items.filter(x=>x.itemType==='labor').reduce((sum,x)=>sum+x.quantity*x.unitPrice,0);
  const total=materialTotal+laborTotal;
  async function exportBudgetPdf(){
   if(pdfBusy||!items.length)return;
   if(dirty){setStatus('Salve as alterações do orçamento antes de gerar o PDF.');return}
-  const included=items.filter(x=>x.quantity>0&&(x.itemType==='labor'?pdfOptions.labor:pdfOptions.materials));
+  const included=items.filter(x=>x.quantity>0&&(x.itemType==='labor'?pdfOptions.labor:pdfOptions.materials)).sort((a,b)=>a.description.localeCompare(b.description,'pt-BR',{numeric:true,sensitivity:'base'}));
   if(!included.length){setStatus('Selecione ao menos uma categoria com itens para o PDF.');return}
   const headers=['Descrição',...(pdfOptions.quantity?['Quantidade','Unidade']:[]),...(pdfOptions.unitPrice?['Valor unitário']:[]),...(pdfOptions.total?['Subtotal']:[])];
   const rows=included.map(x=>[x.description,...(pdfOptions.quantity?[x.quantity.toLocaleString('pt-BR',{maximumFractionDigits:3}),x.unit]:[]),...(pdfOptions.unitPrice?[moneyBR(x.unitPrice)]:[]),...(pdfOptions.total?[moneyBR(x.quantity*x.unitPrice)]:[])]);
@@ -1621,7 +1637,7 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  {editorOpen&&<div className="ep-modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget&&!busy)closeBudget()}}><section className="panel ep-editor-card" role="dialog" aria-modal={true} aria-label={selectedId?'Editar orçamento':'Novo orçamento'}><div className="ep-editor-heading"><h2>{selectedId?(viewMode?title:'Editar orçamento'):'Novo orçamento'}</h2>{<button type="button" className="ep-close" aria-label="Fechar" disabled={busy||loading} onClick={closeBudget}><X size={20}/></button>}</div>
  <div className="ep-budget-glance" aria-label="Conferência rápida dos valores"><div><span>Materiais</span><strong>{moneyBR(materialTotal)}</strong></div><div><span>Mão de obra</span><strong>{moneyBR(laborTotal)}</strong></div><div className="ep-budget-glance-total"><span>Total previsto</span><strong>{moneyBR(total)}</strong></div></div>{dirty&&<p className="hint" role="status">Alterações não salvas: confira os itens e salve antes de considerar este total definitivo.</p>}
  {viewMode&&selectedId?<div className="ep-summary">
- <div className="ep-summary-table"><table><thead><tr><th>Item</th><th>Qtd.</th><th>Un.</th><th>Valor un.</th><th>Subtotal</th></tr></thead><tbody>{items.map(x=><tr key={x.id}><td>{x.description}{x.itemType==='labor'?' (Mão de obra)':''}</td><td>{x.quantity.toLocaleString('pt-BR',{maximumFractionDigits:3})}</td><td>{x.unit}</td><td>{moneyBR(x.unitPrice)}</td><td>{moneyBR(x.quantity*x.unitPrice)}</td></tr>)}</tbody></table></div>
+ <div className="ep-summary-table"><table><thead><tr><th>Item</th><th>Qtd.</th><th>Un.</th><th>Valor un.</th><th>Subtotal</th><th>Ações</th></tr></thead><tbody>{items.map(x=><tr key={x.id}><td>{x.description}{x.itemType==='labor'?' (Mão de obra)':''}</td><td>{x.quantity.toLocaleString('pt-BR',{maximumFractionDigits:3})}</td><td>{x.unit}</td><td>{moneyBR(x.unitPrice)}</td><td>{moneyBR(x.quantity*x.unitPrice)}</td><td><button type="button" className="outline" onClick={()=>setViewMode(false)} title="Editar item">Editar</button> <button type="button" className="outline" onClick={()=>{if(window.confirm('Excluir '+x.description+'?')){setRowsDirty(old=>old.filter(y=>y.id!==x.id));setViewMode(false)}}} title="Excluir item">Excluir</button></td></tr>)}</tbody></table></div>
  <div className="ep-total-highlight"><span>Total do orçamento</span><strong>{moneyBR(total)}</strong></div>
  <p className="hint">Materiais: {moneyBR(materialTotal)} · Mão de obra: {moneyBR(laborTotal)}</p>
  <div className="ep-summary-actions"><button type="button" className="primary" disabled={busy||loading} onClick={()=>setViewMode(false)}>Editar / Incluir mão de obra</button><button type="button" className="outline" disabled={busy||loading} onClick={()=>void removeBudget()}>Excluir</button><button type="button" className="outline" onClick={closeBudget}>Fechar</button></div>
@@ -1634,8 +1650,8 @@ function BudgetsPanel({clientId,userId,localBudget,client,professional,logo,acce
  <div className="ep-select-all"><strong>Selecionar materiais do projeto</strong><label><input type="checkbox" aria-label="Selecionar todos os materiais" disabled={busy||loading||materials.length===0} checked={materials.length>0&&materials.every(x=>selectedMaterials.includes(x.id))} onChange={e=>setSelectedMaterials(e.target.checked?materials.map(x=>x.id):[])}/><span>Selecionar todos</span></label></div>
  {materials.length===0?<p className="hint">Nenhum material cadastrado.</p>:materials.map(x=><label key={x.id} style={{display:'flex',alignItems:'center',gap:8,marginTop:8}}><input type="checkbox" style={{width:18}} checked={selectedMaterials.includes(x.id)} disabled={busy||loading} onChange={e=>setSelectedMaterials(old=>e.target.checked?[...old,x.id]:old.filter(id=>id!==x.id))}/><span>{x.description} · {x.quantity} {x.unit} · {moneyBR(Number(x.unit_price))}/un.</span></label>)}
  </div>
- <button type="button" className="outline" disabled={busy||loading||!serviceTemplates.length} onClick={includeServices}>Incluir serviços do projeto</button>{serviceWarning&&<p className="hint">{serviceWarning}</p>}<p className="hint">As importações são opcionais e não apagam a origem. Revise os itens antes de salvar para evitar duplicidades.</p>
- <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:8}}>Descrição</th><th style={{textAlign:'left',padding:8}}>Tipo</th><th style={{textAlign:'left',padding:8,width:90}}>Quantidade</th><th style={{textAlign:'left',padding:8,width:75}}>Un.</th><th style={{textAlign:'left',padding:8,width:125}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:8,width:120}}>Subtotal</th><th style={{width:48}}/></tr></thead><tbody>{items.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:8}}><input aria-label="Descrição" style={{minWidth:180}} disabled={busy||loading} value={x.description} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,description:e.target.value}:y))}/></td><td style={{padding:8}}><select aria-label={'Tipo '+x.description} disabled={busy||loading} value={x.itemType} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,itemType:e.target.value as 'material'|'labor'}:y))}><option value="material">Material</option><option value="labor">Mão de obra</option></select></td><td style={{padding:8}}>{x.itemType==='labor'?<div style={{display:'flex',alignItems:'center',gap:6}}><button type="button" className="outline" aria-label={'Diminuir '+x.description} disabled={busy||loading||x.quantity<=0} onClick={()=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Math.max(0,y.quantity-1)}:y))}>−</button><span>{x.quantity}</span><button type="button" className="primary" aria-label={'Aumentar '+x.description} disabled={busy||loading} onClick={()=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:y.quantity+1}:y))}>+</button></div>:<input aria-label={'Quantidade '+x.description} style={{minWidth:65}} type="number" min="0" step="0.001" disabled={busy||loading} value={x.quantity} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Number(e.target.value)}:y))}/>}</td><td style={{padding:8}}><input aria-label={'Unidade '+x.description} style={{minWidth:55}} disabled={busy||loading} value={x.unit} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unit:e.target.value}:y))}/></td><td style={{padding:8}}>{x.quantity>0?<input aria-label={'Preço '+x.description} style={{minWidth:95}} type="number" min="0" step="0.01" disabled={busy||loading} value={x.unitPrice} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Number(e.target.value)}:y))}/>:<span>—</span>}</td><td style={{textAlign:'right',whiteSpace:'nowrap',padding:8}}>{x.quantity>0?moneyBR(x.quantity*x.unitPrice):'—'}</td><td><button type="button" className="outline" disabled={busy||loading} title="Remover item" onClick={()=>setRowsDirty(old=>old.filter(y=>y.id!==x.id))}><X size={16}/></button></td></tr>)}</tbody></table></div>
+ <button type="button" className="outline" disabled={busy||loading||!serviceTemplates.length} onClick={includeServices}>Atualizar itens do projeto</button>{serviceWarning&&<p className="hint">{serviceWarning}</p>}<p className="hint">As importações são opcionais e não apagam a origem. Revise os itens antes de salvar para evitar duplicidades.</p>
+ <div style={{overflowX:'auto',marginTop:16}}><table style={{width:'100%',borderCollapse:'collapse',minWidth:690}}><thead><tr><th style={{textAlign:'left',padding:8}}>Descrição</th><th style={{textAlign:'left',padding:8}}>Tipo</th><th style={{textAlign:'left',padding:8,width:90}}>Quantidade</th><th style={{textAlign:'left',padding:8,width:75}}>Un.</th><th style={{textAlign:'left',padding:8,width:125}}>Preço un. (R$)</th><th style={{textAlign:'right',padding:8,width:120}}>Subtotal</th><th style={{width:48}}/></tr></thead><tbody>{items.map(x=><tr key={x.id} style={{borderTop:'1px solid #36393f'}}><td style={{padding:8}}><input aria-label="Descrição" style={{minWidth:180}} disabled={busy||loading} value={x.description} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,description:e.target.value}:y))}/></td><td style={{padding:8}}><select aria-label={'Tipo '+x.description} disabled={busy||loading} value={x.itemType} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,itemType:e.target.value as 'material'|'labor'}:y))}><option value="material">Material</option><option value="labor">Mão de obra</option></select></td><td style={{padding:8}}>{x.itemType==='labor'?<div style={{display:'flex',alignItems:'center',gap:6}}><button type="button" className="outline" aria-label={'Diminuir '+x.description} disabled={busy||loading||x.quantity<=0} onClick={()=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Math.max(0,y.quantity-1)}:y))}>−</button><span>{x.quantity}</span><button type="button" className="primary" aria-label={'Aumentar '+x.description} disabled={busy||loading} onClick={()=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:y.quantity+1}:y))}>+</button></div>:<input aria-label={'Quantidade '+x.description} style={{minWidth:65}} type="number" min="0" step="0.001" disabled={busy||loading} value={x.quantity} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,quantity:Number(e.target.value)}:y))}/>}</td><td style={{padding:8}}><input aria-label={'Unidade '+x.description} style={{minWidth:55}} disabled={busy||loading} value={x.unit} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unit:e.target.value}:y))}/></td><td style={{padding:8}}>{x.quantity>0?<input aria-label={'Preço '+x.description} style={{minWidth:95}} type="number" min="0" step="0.01" disabled={busy||loading} value={x.unitPrice} onChange={e=>setRowsDirty(old=>old.map(y=>y.id===x.id?{...y,unitPrice:Number(e.target.value)}:y))}/>:<span>—</span>}</td><td style={{textAlign:'right',whiteSpace:'nowrap',padding:8}}>{x.quantity>0?moneyBR(x.quantity*x.unitPrice):'—'}</td><td><button type="button" className="outline" disabled={busy||loading} title="Remover item" onClick={()=>{if(window.confirm('Excluir '+x.description+'?'))setRowsDirty(old=>old.filter(y=>y.id!==x.id))}}><X size={16}/></button></td></tr>)}</tbody></table></div>
  {items.length===0&&<p className="hint">Nenhum item incluído. Importe materiais ou adicione um item manualmente.</p>}
  <div style={{marginTop:18}}><p><strong>Materiais:</strong> {moneyBR(materialTotal)}</p><p><strong>Mão de obra:</strong> {moneyBR(laborTotal)}</p></div>
  <div style={{display:'flex',justifyContent:'space-between',gap:12,margin:'18px 0',flexWrap:'wrap'}}><strong>Total do orçamento</strong><strong style={{fontSize:22}}>{moneyBR(total)}</strong></div>
