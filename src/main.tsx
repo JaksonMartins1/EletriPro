@@ -1792,21 +1792,28 @@ const reportNum=(v:unknown)=>{const n=Number(v);return Number.isFinite(n)?n.toLo
 function TechnicalReport({client,userId,professional,logo,accent,settings,maintenanceMode=false}:{client:Client;userId:string;professional:string;logo:string;accent:string;settings:InstallationSettings;maintenanceMode?:boolean}){
  const [options,setOptions]=useState<ReportOptions>(maintenanceMode?{maintenanceSurvey:true,maintenanceProposal:true,installation:false,environments:false,circuits:false,distribution:false,feeder:false,materials:true,labor:true,values:true}:{...reportDefaults});
  const [busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [budgets,setBudgets]=useState<CloudBudget[]>([]),[budgetId,setBudgetId]=useState(''),[budgetRows,setBudgetRows]=useState<MaterialRow[]>([]),[budgetLoading,setBudgetLoading]=useState(!maintenanceMode),[itemsLoading,setItemsLoading]=useState(false),[budgetError,setBudgetError]=useState('');
+ useEffect(()=>{if(maintenanceMode)return;let active=true;setBudgetLoading(true);(async()=>{try{const pr=await supabase.from('eletripro_projects').select('id').eq('client_id',client.id).eq('owner_id',userId).maybeSingle();if(pr.error)throw pr.error;const r=pr.data?await supabase.from('eletripro_budgets').select('id,title,status').eq('project_id',pr.data.id).order('updated_at',{ascending:false}):{data:[],error:null};if(r.error)throw r.error;if(active){setBudgets(r.data||[]);setBudgetId(r.data?.length===1?r.data[0].id:'')}}catch(e:any){if(active)setBudgetError(e?.message||'Falha ao carregar orçamentos.')}finally{if(active)setBudgetLoading(false)}})();return()=>{active=false}},[client.id,userId,maintenanceMode]);
+ useEffect(()=>{if(maintenanceMode)return;let active=true;setBudgetRows([]);setBudgetError('');if(!budgetId){setItemsLoading(false);return}setItemsLoading(true);(async()=>{try{const r=await supabase.from('eletripro_budget_items').select('id,description,quantity,unit,unit_price,item_type').eq('budget_id',budgetId).order('description');if(r.error)throw r.error;if(active)setBudgetRows(r.data||[])}catch(e:any){if(active)setBudgetError(e?.message||'Falha ao carregar itens.')}finally{if(active)setItemsLoading(false)}})();return()=>{active=false}},[budgetId,maintenanceMode]);
+ const needsBudget=!maintenanceMode&&(options.materials||options.labor);
+ const budgetBlocked=needsBudget&&(budgetLoading||itemsLoading||!budgetId||!!budgetError);
+ const rowTotal=(m:MaterialRow)=>(Number(m.quantity)||0)*(Number(m.unit_price)||0);
+ const budgetTable=(kind:'material'|'labor')=>{const rows=budgetRows.filter(m=>kind==='labor'?m.item_type==='labor':m.item_type!=='labor');return <div style={{overflowX:'auto',marginTop:16}}><h3>{kind==='labor'?'Mão de obra':'Lista de materiais'}</h3><table style={{width:'100%',textAlign:'center'}}><thead><tr><th>Descrição</th><th>Quantidade</th><th>Unidade</th>{options.values&&<><th>Preço unitário</th><th>Subtotal</th></>}</tr></thead><tbody>{rows.map(m=><tr key={m.id}><td>{m.description}</td><td>{reportNum(m.quantity)}</td><td>{m.unit}</td>{options.values&&<><td>{moneyBR(Number(m.unit_price)||0)}</td><td>{moneyBR(rowTotal(m))}</td></>}</tr>)}{!rows.length&&<tr><td colSpan={options.values?5:3}>Nenhum registro cadastrado</td></tr>}</tbody>{options.values&&<tfoot><tr><th colSpan={4}>Total</th><th>{moneyBR(rows.reduce((sum,m)=>sum+rowTotal(m),0))}</th></tr></tfoot>}</table></div>};
  const change=(k:keyof ReportOptions,v:boolean)=>setOptions(o=>({...o,[k]:v}));
  const generate=async()=>{
-  if(busy)return;setBusy(true);setError('');
+  if(busy||budgetBlocked)return;setBusy(true);setError('');
   try{
    const pr=await supabase.from('eletripro_projects').select('id,installation').eq('client_id',client.id).eq('owner_id',userId).maybeSingle();
    if(pr.error)throw pr.error;
    const project=pr.data,id=project?.id;
    const catalog=await loadActiveElectricalCatalog();
-   const [cr,er,mr]=await Promise.all([
+   const [cr,er]=await Promise.all([
     id&&!maintenanceMode&&(options.circuits||options.distribution||options.feeder||options.maintenanceProposal||options.materials)?supabase.from('eletripro_circuits').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
     id&&!maintenanceMode&&(options.environments||options.circuits||options.distribution||options.feeder||options.materials)?supabase.from('eletripro_environments').select('id,title,data').eq('project_id',id).order('created_at',{ascending:true}):Promise.resolve({data:[],error:null}),
-    id&&!maintenanceMode&&(options.materials||options.labor)?supabase.from('eletripro_materials').select('*').eq('project_id',id):Promise.resolve({data:[],error:null})
+
    ]);
-   for(const r of [cr,er,mr])if(r.error)throw r.error;
-   const circuits=(cr.data||[]) as SavedCircuit[],rooms=(er.data||[]) as SavedEnvironment[],materials=(mr.data||[]) as MaterialRow[];
+   for(const r of [cr,er])if(r.error)throw r.error;
+   const circuits=(cr.data||[]) as SavedCircuit[],rooms=(er.data||[]) as SavedEnvironment[];
    const sections:ReportSection[]=[];
    const add=(title:string,headers:string[],rows:(string|number|null|undefined)[][],kind?:'materials')=>sections.push({title,headers,rows,kind});
    const d={...defaultInstallation,...settings,...(project?.installation||{})};
@@ -1847,13 +1854,10 @@ function TechnicalReport({client,userId,professional,logo,accent,settings,mainte
     if(c.laborDescription?.trim())rows.push({id:`labor-${c.id}`,item_type:'labor',description:`${c.laborDescription} — ${c.name}`,quantity:1,unit:'serviço',unit_price:Number(c.laborPrice)||0} as MaterialRow);
     return rows;
    }):[];
-   const currentDescriptions=new Map<string,string>();
-   if(!maintenanceMode&&options.materials)for(const c of circuits)for(const item of generatedCircuitItems(c,d,rooms,catalog)||[])currentDescriptions.set(item.source_key,item.description);
-   const reportMaterials=materials.map(m=>({...m,description:currentDescriptions.get(m.source_key||'')||m.description}));
-   const chosen=consolidateMaterialRows((maintenanceMode?maintenanceMaterials:reportMaterials).filter(m=>(m.item_type==='labor'?options.labor:options.materials))).sort((a,b)=>String(a.description||'').localeCompare(String(b.description||''),'pt-BR',{sensitivity:'base',numeric:true}));
-   if(options.materials||options.labor){
-    add('Materiais e mão de obra',['Categoria','Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],chosen.map(m=>[m.item_type==='labor'?'Mão de obra':'Material',m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR((Number(m.quantity)||0)*(Number(m.unit_price)||0))]:[])]),'materials');
-   }
+   let savedRows:MaterialRow[]=[];
+   if(needsBudget){if(!id)throw new Error('Projeto não encontrado.');const selected=await supabase.from('eletripro_budgets').select('id,title').eq('project_id',id).eq('id',budgetId).single();if(selected.error)throw selected.error;const r=await supabase.from('eletripro_budget_items').select('id,description,quantity,unit,unit_price,item_type').eq('budget_id',budgetId).order('description');if(r.error)throw r.error;savedRows=r.data||[];setBudgetRows(savedRows);add('Orçamento de referência',['Parâmetro','Valor'],[['Orçamento',selected.data.title]]);}
+   const chosen=(maintenanceMode?consolidateMaterialRows(maintenanceMaterials):savedRows).filter(m=>m.item_type==='labor'?options.labor:options.materials);
+   for(const kind of ['material','labor'] as const){if(!(kind==='labor'?options.labor:options.materials))continue;const rows=chosen.filter(m=>kind==='labor'?m.item_type==='labor':m.item_type!=='labor');const data=rows.map(m=>[m.description,reportNum(m.quantity),m.unit,...(options.values?[moneyBR(Number(m.unit_price)||0),moneyBR(rowTotal(m))]:[])]);if(options.values&&rows.length)data.push(['Total', '', '', '',moneyBR(rows.reduce((sum,m)=>sum+rowTotal(m),0))]);add(kind==='labor'?'Mão de obra':'Lista de materiais',['Descrição','Quantidade','Unidade',...(options.values?['Preço unitário','Subtotal']:[])],data,'materials');}
    if(maintenanceMode&&options.materials){const pending=maintenance.circuits.filter(c=>c.changeCables&&(!(Number(c.length)>0)||!(Number(c.proposedSection)>0)||![c.phaseConductors??'1',c.neutralConductors??'1',c.earthConductors??'1'].some(v=>Number(v)>0)));if(pending.length)add('Pendências de quantitativos',['Circuito','Dados faltantes'],pending.map(c=>[c.name,'Informe comprimento, seção proposta e quantidade de condutores por tipo']));}
    const total=options.values&&(options.materials||options.labor)?moneyBR(chosen.reduce((sum,m)=>sum+(Number(m.quantity)||0)*(Number(m.unit_price)||0),0)):undefined;
    await downloadTechnicalPdf({company:professional||'EletriPro',logo,accent,client:client.name,phone:client.phone||'',email:client.email||'',sections,total},`EletriPro-Relatorio-${client.name.replace(/[^a-zA-Z0-9À-ÿ_-]+/g,'-')}.pdf`);
@@ -1861,7 +1865,7 @@ function TechnicalReport({client,userId,professional,logo,accent,settings,mainte
  };
  return <section className="panel"><h2>Relatório técnico em PDF</h2><p>Selecione as seções desejadas. Descrição e quantidade aparecem em todas as listas exportadas. O arquivo PDF será baixado diretamente.</p><div className="ep-report-options">{([
  ['maintenanceSurvey','Levantamento da instalação existente'],['maintenanceProposal','Proposta automática de adequação (preliminar)'],['installation','Tipo de instalação'],['environments','Ambientes'],['circuits','Dimensionamento dos circuitos'],['distribution','Quadro de distribuição'],['feeder','Alimentador geral'],['materials','Lista de materiais'],['labor','Mão de obra'],['values','Valores e totais']
- ] as [keyof ReportOptions,string][]).filter(([key])=>maintenanceMode?['maintenanceSurvey','maintenanceProposal','materials','labor','values'].includes(key):!['maintenanceSurvey','maintenanceProposal'].includes(key)).map(([key,label])=><label key={key}><input type="checkbox" checked={options[key]} onChange={e=>change(key,e.target.checked)}/> {label}</label>)}</div><button className="primary" type="button" disabled={busy} onClick={()=>void generate()}>{busy?'Gerando PDF...':'Gerar relatório / PDF'}</button>{error&&<p role="alert" className="hint">{error}</p>}<p className="hint">A geração ocorre no navegador, usando os dados do Supabase. Nenhum registro é alterado.</p></section>
+ ] as [keyof ReportOptions,string][]).filter(([key])=>maintenanceMode?['maintenanceSurvey','maintenanceProposal','materials','labor','values'].includes(key):!['maintenanceSurvey','maintenanceProposal'].includes(key)).map(([key,label])=><label key={key}><input type="checkbox" checked={options[key]} onChange={e=>change(key,e.target.checked)}/> {label}</label>)}</div>{needsBudget&&<div><label>Orçamento de referência<select value={budgetId} disabled={budgetLoading||busy} onChange={e=>setBudgetId(e.target.value)}><option value="">Selecione um orçamento salvo</option>{budgets.map(b=><option key={b.id} value={b.id}>{b.title}</option>)}</select></label>{budgetLoading||itemsLoading?<p>Carregando orçamento...</p>:budgetError?<p role="alert">{budgetError}</p>:!budgets.length?<p>Salve um orçamento na aba Orçamento antes de exportar estas seções.</p>:budgetId?<>{options.materials&&budgetTable('material')}{options.labor&&budgetTable('labor')}{options.values&&<p><strong>Total das seções selecionadas: {moneyBR(budgetRows.filter(m=>m.item_type==='labor'?options.labor:options.materials).reduce((sum,m)=>sum+rowTotal(m),0))}</strong></p>}</>:null}</div>}<button className="primary" type="button" disabled={busy||budgetBlocked} onClick={()=>void generate()}>{busy?'Gerando PDF...':'Gerar relatório / PDF'}</button>{error&&<p role="alert" className="hint">{error}</p>}<p className="hint">A geração ocorre no navegador, usando os dados do Supabase. Nenhum registro é alterado.</p></section>
 }
 
 

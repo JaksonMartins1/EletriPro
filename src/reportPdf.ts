@@ -47,7 +47,7 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
   ctx.strokeStyle=accent;ctx.lineWidth=3;ctx.beginPath();ctx.moveTo(left,y);ctx.lineTo(left+contentW,y);ctx.stroke();y+=22;
   const material=section.kind==='materials';const cols=section.headers.length;
   let widths:number[];
-  if(material){widths=cols===6?[112,490,105,80,132,135]:[130,690,120,114]}else if(section.title==='Circuitos dimensionados'){widths=[230,260,170,190,204]}else if(section.title==='Quadro de distribuição'){widths=[235,125,180,175,339]}else if(section.title==='Circuitos da instalação existente'&&cols===8)widths=[160,90,120,125,120,105,110,224];else if(section.title==='Proposta preliminar de adequação'&&cols===3)widths=[200,270,contentW-470];else if(cols===2)widths=[330,contentW-330];else widths=Array(cols).fill(contentW/cols);
+  if(material){widths=cols===5?[540,110,90,155,159]:cols===3?[780,150,124]:cols===6?[112,490,105,80,132,135]:[130,690,120,114]}else if(section.title==='Circuitos dimensionados'){widths=[230,260,170,190,204]}else if(section.title==='Quadro de distribuição'){widths=[235,125,180,175,339]}else if(section.title==='Circuitos da instalação existente'&&cols===8)widths=[160,90,120,125,120,105,110,224];else if(section.title==='Proposta preliminar de adequação'&&cols===3)widths=[200,270,contentW-470];else if(cols===2)widths=[330,contentW-330];else widths=Array(cols).fill(contentW/cols);
   const sum=widths.reduce((a,b)=>a+b,0);widths=widths.map(w=>w*contentW/sum);
   const header=()=>{
    const headerLines=section.headers.map((h,i)=>wrap(h,widths[i]-12,14));
