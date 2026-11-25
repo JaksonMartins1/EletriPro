@@ -1,6 +1,6 @@
 // EletriPro: exportação PDF local, sem serviços externos nem janela de impressão.
 export type ReportSection={title:string;headers:string[];rows:(string|number|null|undefined)[][];kind?:'materials'|'normal'};
-export type ReportDocument={title?:string;company:string;logo?:string;accent?:string;client:string;phone?:string;email?:string;sections:ReportSection[];total?:string};
+export type ReportDocument={title?:string;company:string;logo?:string;accent?:string;client:string;phone?:string;email?:string;address?:string;sections:ReportSection[];total?:string};
 const txt=(v:unknown)=>v===null||v===undefined||v===''?'—':String(v);
 const bytes=(s:string)=>new TextEncoder().encode(s);
 const concat=(parts:Uint8Array[])=>{const size=parts.reduce((n,p)=>n+p.length,0);const result=new Uint8Array(size);let at=0;for(const p of parts){result.set(p,at);at+=p.length}return result};
@@ -39,6 +39,7 @@ export async function downloadTechnicalPdf(doc:ReportDocument,filename:string){
  const detail=(value:string,size:number,bold=false)=>{for(const item of wrap(value,contentW,size)){ensure(size+12);text(item,left,y,size,bold);y+=size+10}};
  detail('Cliente: '+doc.client,19,true);
  detail('Telefone: '+txt(doc.phone)+'   |   E-mail: '+txt(doc.email),16);
+ if(doc.address?.trim())detail('Endereço: '+doc.address.trim(),16);
  detail('Emissão: '+new Date().toLocaleDateString('pt-BR'),16);
  for(const section of doc.sections){
   const sectionTitleLines=wrap(section.title,contentW,23);
