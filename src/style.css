@@ -379,3 +379,44 @@ select{appearance:auto;width:100%;cursor:pointer}textarea{width:100%;resize:vert
 .ep-catalog-choice legend{font-weight:600;margin-bottom:8px}
 .ep-catalog-choice-buttons{display:flex;flex-wrap:wrap;gap:8px}
 .ep-catalog-choice-buttons button[aria-pressed="true"]{background:var(--accent,#eab308);border-color:var(--accent,#eab308);color:#111;font-weight:700}
+
+/* Maintenance follows the user's branding. */
+.ep-maintenance .maintenance-choice.selected,.ep-maintenance .primary{background:var(--accent)!important;border-color:var(--accent)!important;color:#111!important}
+.ep-maintenance .maintenance-choice,.ep-maintenance .outline,.ep-maintenance .maintenance-counter-actions button{border-color:var(--accent)!important}
+.ep-maintenance .maintenance-choice:not(.selected),.ep-maintenance .outline,.ep-maintenance .maintenance-counter-actions button{color:var(--accent)!important;background:transparent!important}
+.ep-maintenance .ep-maint-nav button span{background:var(--accent)!important;color:#111!important}
+
+.ep-client-modal{width:min(100%,600px);max-height:90vh;overflow:auto;}
+.ep-client-modal-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+
+/* Identidade visual EletriPro — camada de apresentação, sem mudanças de regras. */
+:root{background:#101318;--surface:#1b1f27;--surface-raised:#232831;--border-soft:#383e48;--muted:#a5abb5;--bg:#101318;--panel:#1b1f27;--line:#383e48}
+.app{--ep-bg:#101318;--ep-panel:#1b1f27;--ep-border:#383e48;--ep-text:#f5f5f5;--ui-gold:#ffbf00;background:#101318;color:#f5f5f5}
+.app aside{background:#11151b;border-right:1px solid #383e48;padding:22px 12px;gap:20px}
+.app .sidebar-head{border-bottom:1px solid #383e48;padding:0 8px 20px}
+.brand{font-size:29px;line-height:1.05;letter-spacing:-1.3px}.brand>span{display:block}.brand small{display:block;font-size:9px;letter-spacing:0;font-weight:500;margin-top:5px;color:#d0d3d8}.brand svg,.app .brand svg{color:#ffbf00;fill:#ffbf00;stroke-width:1.5;width:34px;height:34px}.ep-brand-pro{color:#ffbf00}
+.app .nav-item{color:#e4e7eb;border-radius:9px;padding:12px 14px;min-height:44px}.app .nav-item:hover{background:#252a33}.app .nav-item.active{background:#ffbf00;color:#11151b;box-shadow:none;font-weight:750}
+.app .topbar{background:#11151b;border-bottom:1px solid #383e48;min-height:76px;position:sticky;top:0;z-index:15}.ep-header-title{margin-right:auto;font-size:23px;font-weight:750;letter-spacing:-.5px}.account-trigger{background:#1b1f27;border-color:#383e48;border-radius:12px}.company-avatar{background:#303640}.account-dropdown{background:#1b1f27;border-color:#383e48}
+.app .content{max-width:1440px;padding:26px 28px 48px}.app .page-heading{margin-bottom:22px}.app .page-heading h1{font-size:clamp(25px,3vw,32px)}.eyebrow{color:#a5abb5}.plan-chip{background:#ffbf00;color:#101318;border-color:#ffbf00;font-weight:750}
+.panel,.stats article,.quick-card,.ep-modern-recent,.ep-modern-shortcuts>button,.ep-record,.ep-material-record,.ep-client-card,.ep-summary-grid>div,.ep-circuit-list-item{background:#1b1f27;border-color:#383e48;border-radius:12px;box-shadow:none}.panel{padding:22px}.panel h2{font-size:20px;letter-spacing:-.35px}.panel-heading{margin-bottom:12px}.panel-heading p,p,small,.hint{color:#a5abb5}
+.app .primary,.ep-modern-hero-action,.auth-card .primary,.ep-terms-actions .primary{background:#ffbf00;color:#11151b;border:1px solid #ffbf00;border-radius:9px;box-shadow:none}.app .primary:hover,.ep-modern-hero-action:hover,.auth-card .primary:hover{background:#ffd044;border-color:#ffd044}.outline,.google,.ep-close{background:#232831;color:#f5f5f5;border:1px solid #454c58;border-radius:9px}.outline:hover{background:#303640}
+input:not([type=checkbox]):not([type=radio]):not([type=color]),select,textarea,.form select,.auth-card select{background:#15191f;border-color:#454c58;color:#f5f5f5;border-radius:9px}.ep-client-search{background:#15191f;border-color:#454c58;color:#a5abb5}.ep-client-search button{color:#a5abb5}
+.panel>.client{background:#20252d;border:1px solid #303640;border-radius:10px;margin:9px 0;padding:15px 16px}.client strong{font-size:15px}.client p{color:#d0d4dc;line-height:1.5}.client small{color:#a5abb5}.panel table th{background:#292e37;color:#f5f5f5}.panel table td{border-bottom:1px solid #383e48}.panel tr:hover td{background:#ffffff05}
+.ep-modern-hero{background:linear-gradient(120deg,#232831,#171b22);border-color:#383e48;border-radius:14px;box-shadow:none}.ep-modern-kicker,.ep-shortcut-icon{color:#ffbf00}.ep-modern-shortcuts>button:hover{background:#252b34;border-color:#ffbf00}.ep-modern-recent-list>button:hover{background:#252b34}
+.center{background:radial-gradient(ellipse at top,#252a32,#101318 65%)}.auth-card{background:#1b1f27;border-color:#383e48;border-radius:16px;box-shadow:0 20px 60px #0005}.ep-modal-backdrop{background:#080a0dcc;backdrop-filter:blur(3px)}.ep-modal-backdrop>.ep-editor-card,.ep-modal-backdrop>.ep-circuit-editor,.ep-client-modal,.ep-terms-dialog{background:#1b1f27;border:1px solid #626a77;border-radius:14px;box-shadow:0 20px 70px #0009}.ep-modal-backdrop .ep-editor-heading{background:#1b1f27}.ep-client-modal-actions{margin-top:10px}.app .ep-maintenance .primary{background:#ffbf00!important;border-color:#ffbf00!important;color:#11151b!important}
+@media(min-width:721px){.app aside{position:sticky;top:0;height:100vh;overflow-y:auto;scrollbar-width:thin}.app .sidebar-bottom{padding-bottom:10px}}
+@media(max-width:720px){.ep-header-title{display:none}.app .topbar{min-height:60px}.app .content{padding:20px 14px 105px}.app .panel{padding:15px}.app .nav-item.active{background:#ffbf00;color:#11151b}.app .ep-mobile-bottom-nav{background:#11151b;border-color:#383e48}.app .ep-mobile-bottom-nav button.active{color:#ffbf00}.panel>.client{padding:12px}.app .brand{font-size:25px}}
+
+/* Navegação mobile: mantém a identidade original e usa a cor da conta. */
+@media(max-width:720px){
+ .app .mobile-menu{display:none!important}
+ .app .ep-mobile-bottom-nav{display:flex;gap:4px;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;align-items:stretch;background:#11151b;border-color:#383e48;padding:7px 8px calc(7px + env(safe-area-inset-bottom,0px));}
+ .app .ep-mobile-bottom-nav::-webkit-scrollbar{display:none}
+ .app .ep-mobile-bottom-nav button{flex:1 0 76px;min-width:76px;min-height:60px;padding:7px 4px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:5px;color:#a5abb5;white-space:nowrap;font-size:10px;}
+ .app .ep-mobile-bottom-nav button.active{color:var(--accent,#a3a3a3);background:#232831;box-shadow:inset 0 -2px var(--accent,#a3a3a3);}
+ .app aside .nav-item.active{background:#232831;color:var(--accent,#a3a3a3);box-shadow:inset 3px 0 var(--accent,#a3a3a3);}
+ .app .content{padding-bottom:calc(105px + env(safe-area-inset-bottom,0px));}
+ .app aside.open{overflow-y:auto;}
+}
+
+.ep-agenda-controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0}.ep-agenda-controls input{width:auto;min-width:0}.ep-agenda-filters{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.ep-agenda-day{display:flex;flex-direction:column;align-items:flex-start;gap:6px;background:transparent;color:inherit;cursor:pointer}.ep-agenda-day[aria-pressed=true]{outline:2px solid var(--accent,#a3a3a3);outline-offset:-2px;background:rgba(128,128,128,.12)}.ep-agenda-day small{font-size:.72rem;overflow-wrap:anywhere}.ep-agenda-list-head{margin-top:18px;flex-wrap:wrap}@media(max-width:650px){.ep-agenda-day small{font-size:.58rem}.ep-agenda-filters{grid-template-columns:1fr}.ep-agenda-controls button{padding:8px}.ep-agenda-day{min-height:65px}}
