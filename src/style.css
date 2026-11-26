@@ -568,3 +568,21 @@ input:not([type=checkbox]):not([type=radio]):not([type=color]),select,textarea,.
 
 /* Painel inicial compacto */
 .ep-home-dashboard{display:grid;gap:12px;min-width:0}.ep-home-metrics,.ep-home-finance{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.ep-home-metrics article,.ep-home-finance article,.ep-home-block{background:#1b1f27;border:1px solid #373d47;border-radius:14px;padding:14px;min-width:0}.ep-home-metrics article{display:grid;grid-template-columns:22px 1fr;align-items:center;gap:6px 8px}.ep-home-metrics svg,.ep-home-block h2 svg{color:var(--accent);flex-shrink:0}.ep-home-metrics span,.ep-home-finance span{font-size:12px;color:#b2bac7}.ep-home-metrics strong{grid-column:2;font-size:24px;line-height:1.1;color:var(--accent)}.ep-home-finance article{display:grid;gap:5px;align-content:start}.ep-home-finance strong{font-size:clamp(17px,4.5vw,26px);color:var(--accent);overflow-wrap:anywhere}.ep-home-detail{justify-self:start;background:none;border:0;padding:4px 0;color:var(--accent);font-size:12px;min-height:30px}.ep-home-block h2{display:flex;align-items:center;gap:8px;font-size:17px;margin:0 0 8px}.ep-home-block p{font-size:13px;color:#aeb7c4;margin:8px 0}.ep-home-line{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #373d47}.ep-home-line>div{min-width:0;flex:1}.ep-home-line strong,.ep-home-line small{display:block;overflow-wrap:anywhere}.ep-home-line strong{font-size:14px}.ep-home-line small{font-size:12px;color:#aeb7c4;margin-top:3px}.ep-home-date{font-size:12px;color:var(--accent);flex-shrink:0}.ep-home-avatar{display:grid;place-items:center;width:36px;height:36px;border-radius:10px;background:#292e36;color:var(--accent);font-weight:700;flex-shrink:0}.ep-home-status{display:flex;justify-content:space-between;gap:8px;padding:6px 0;font-size:13px}.ep-home-status strong{color:var(--accent)}@media(min-width:721px){.ep-home-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}.ep-home-dashboard{grid-template-columns:repeat(2,minmax(0,1fr))}.ep-home-metrics,.ep-home-finance{grid-column:1/-1}}@media(max-width:720px){.app .content:has(.ep-home-dashboard){padding-top:12px}.app .content:has(.ep-home-dashboard)>.page-heading{display:none}.ep-home-dashboard{gap:10px}.ep-home-metrics article,.ep-home-finance article,.ep-home-block{padding:12px}}
+
+/* Programa de indicação — layout administrativo compacto */
+.ep-referral-admin{max-width:760px;padding:20px;}
+.ep-referral-toolbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px}
+.ep-referral-toolbar h2{margin:0;font-size:17px}
+.ep-referral-admin .ep-referral-refresh{display:inline-flex;align-items:center;justify-content:center;width:38px;height:38px;min-height:38px;padding:0}
+.ep-referral-list{border:1px solid #8884;border-radius:12px;overflow:hidden}
+.ep-referral-row{display:grid;grid-template-columns:minmax(0,1fr) 120px;align-items:center;gap:12px;padding:10px 14px;border-bottom:1px solid #8883}
+.ep-referral-row:last-child{border-bottom:0}
+.ep-referral-head{background:#8881;font-size:12px;font-weight:650}
+.ep-referral-head span:last-child{text-align:right}
+.ep-referral-plan{display:grid;gap:3px;min-width:0;overflow-wrap:anywhere}
+.ep-referral-plan strong{font-size:14px}.ep-referral-plan small{font-size:12px}
+.ep-referral-field{display:flex;align-items:center;justify-content:flex-end;gap:7px;font-size:13px}
+.ep-referral-admin .ep-referral-field input{width:88px;min-height:38px;height:38px;padding:6px 8px;text-align:right;font-variant-numeric:tabular-nums}
+.ep-referral-actions{display:flex;justify-content:flex-end;margin-top:14px}
+.ep-referral-admin .notice{margin:0 0 12px;font-size:13px}
+@media(max-width:570px){.ep-referral-admin{padding:14px}.ep-referral-row{grid-template-columns:minmax(0,1fr) 106px;padding:10px;gap:8px}.ep-referral-admin .ep-referral-field input{width:76px;min-height:44px;height:44px;font-size:16px}.ep-referral-actions .primary{width:100%}.ep-referral-toolbar h2{font-size:16px}}
