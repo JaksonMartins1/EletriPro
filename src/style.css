@@ -589,3 +589,8 @@ input:not([type=checkbox]):not([type=radio]):not([type=color]),select,textarea,.
 
 .ep-referral-user .ep-referral-toolbar h2{display:flex;align-items:center;gap:8px}
 .ep-referral-code{display:flex;gap:8px;margin:12px 0;align-items:center}.ep-referral-code input{min-width:0;flex:1;width:100%;font-size:14px}.ep-referral-code button{flex:none;padding:10px}.ep-referral-share{width:100%;display:flex;justify-content:center;align-items:center;gap:8px}.ep-referral-stats{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:16px 0}.ep-referral-stats>div{border:1px solid rgba(150,150,150,.25);border-radius:12px;padding:12px;display:grid;gap:5px}.ep-referral-stats strong{font-size:24px;color:var(--accent)}.ep-referral-user .ep-referral-row small{font-size:12px}
+
+/* Conciliação financeira — consulta responsiva */
+.ep-review-item{display:grid;gap:6px;padding:12px;border-bottom:1px solid currentColor;overflow-wrap:anywhere;min-width:0}.ep-review-item small{opacity:.8}.ep-referral-user .ep-referral-stats{grid-template-columns:repeat(2,minmax(0,1fr));flex-wrap:wrap}.ep-referral-user .ep-referral-stats>div{min-width:0}.ep-referral-admin .ep-referral-actions{flex-wrap:wrap;gap:8px}
+
+.ep-referral-quote{display:grid;gap:5px;padding:12px;border:1px solid currentColor;border-radius:10px;margin:8px 0;font-size:.9rem;overflow-wrap:anywhere}.ep-referral-quote small{opacity:.8}.ep-referral-quote strong{font-size:1.1rem}
