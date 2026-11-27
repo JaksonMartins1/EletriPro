@@ -2191,13 +2191,13 @@ async function loadPaymentHistory(){
 async function checkPaymentStatus(intentId:string){
  if(!supabase||checkingPaymentId)return;
  const item=paymentHistory.find(h=>h.id===intentId);
- if(!item||item.payment_provider!=='orders_api'||!item.mercado_pago_order_id||!/^ORDTST/i.test(item.mercado_pago_order_id)){
-  setPaymentStatusNotice('Somente pedidos de teste podem ser consultados nesta versão.');
+ if(!item||item.payment_provider!=='orders_api'||!item.mercado_pago_order_id||!/^ORD/i.test(item.mercado_pago_order_id)){
+  setPaymentStatusNotice('Pedido indisponível para consulta.');
   return;
  }
  setCheckingPaymentId(intentId);setPaymentStatusNotice('Consultando o Mercado Pago...');
  try{
-  const {data,error}=await supabase.functions.invoke('eletripro-payment-status-orders-test',{body:{intent_id:intentId}});
+  const {data,error}=await supabase.functions.invoke(/^ORDTST/i.test(item.mercado_pago_order_id)?'eletripro-payment-status-orders-test':'eletripro-payment-status-orders',{body:{intent_id:intentId}});
   if(error){
    const status=error?.context?.status;
    setPaymentStatusNotice(status===503?'Consulta de homologação temporariamente indisponível (HTTP 503). O pagamento e a assinatura não foram alterados.':`Não foi possível consultar o pagamento${status?' (HTTP '+status+')':''}: ${error.message}`);
